@@ -259,6 +259,24 @@
     print-color-adjust: exact;
   }
 
+  /* Rechenaufgaben — 2-spaltiges Raster, Ergebnis-Kästchen bündig rechts */
+  .aufgaben {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 16mm;
+    row-gap: 6mm;
+  }
+  .aufgabe {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4mm;
+    font-family: "Comic Sans MS", "Segoe Print", cursive;
+    font-size: 9mm;
+    white-space: nowrap;
+  }
+  .aufgabe .cell { border-radius: 1.5mm; }
+
   /* ============ print ============ */
   @page { size: A4 portrait; margin: 0; }
 
@@ -303,7 +321,7 @@
 
     <div class="deko-bar">
       <label class="deko-check"><input type="checkbox" id="deko-on"> Schmuck</label>
-      <button class="btn-dice" id="dice" title="Schmuck neu würfeln">🎲 Neu würfeln</button>
+      <button class="btn-dice" id="dice" title="Schmuck und Aufgaben neu würfeln">🎲 Neu würfeln</button>
     </div>
 
     <hr class="divider">
@@ -533,7 +551,10 @@ function renderDeko(sheet) {
    A template is one declarative object:
      name / description  — shown in the picker
      options[]           — rendered generically by the shell
+     random              — true if render draws from ctx.rng (keeps 🎲 enabled)
      render(opts, ctx)   — returns the sheet body as a DOM node
+   ctx.rng is a seeded PRNG sharing the 🎲 roll with the Schmuck layer:
+   same seed → same sheet, 🎲 re-rolls Aufgaben and Schmuck together.
    The shell owns the header (Name / Datum / Titel) and printing.
    Adding a worksheet type = adding one entry here.               */
 const TEMPLATES = {
@@ -571,6 +592,59 @@ const TEMPLATES = {
         rows.appendChild(row);
       }
       return rows;
+    },
+  },
+
+  mathe1: {
+    name: "Vorschule Mathe I",
+    description: "20 Plus- und Minus-Aufgaben im Zahlenraum bis 20 — fünf davon mit Ergebnis über 10, der Rest bleibt fingerzählbar.",
+    random: true,
+    options: [
+      { key: "title", label: "Titel", type: "text", default: "Vorschule Mathe I" },
+    ],
+    render(o, ctx) {
+      const rng = ctx.rng;
+      // Aufgaben pools — easy lives fully in 0–10, hard has Ergebnis 11–20;
+      // operands ≥ 1, minus never negative (Ergebnis 0 allowed)
+      const easyPlus = [], easyMinus = [], hardPlus = [], hardMinus = [];
+      for (let a = 1; a <= 9; a++)
+        for (let b = 1; a + b <= 10; b++) easyPlus.push([a, "+", b]);
+      for (let a = 1; a <= 10; a++)
+        for (let b = 1; b <= a; b++) easyMinus.push([a, "−", b]);
+      for (let a = 1; a <= 19; a++)
+        for (let b = Math.max(1, 11 - a); a + b <= 20; b++) hardPlus.push([a, "+", b]);
+      for (let a = 12; a <= 20; a++)
+        for (let b = 1; a - b >= 11; b++) hardMinus.push([a, "−", b]);
+
+      // seeded partial Fisher–Yates: draw n distinct Aufgaben from a pool
+      const draw = (pool, n) => {
+        for (let i = 0; i < n; i++) {
+          const j = i + Math.floor(rng() * (pool.length - i));
+          [pool[i], pool[j]] = [pool[j], pool[i]];
+        }
+        return pool.slice(0, n);
+      };
+
+      // 5 hard with random +/− split; totals stay 10 plus / 10 minus
+      const nHardPlus = Math.floor(rng() * 6);
+      const tasks = [
+        ...draw(hardPlus, nHardPlus),
+        ...draw(hardMinus, 5 - nHardPlus),
+        ...draw(easyPlus, 10 - nHardPlus),
+        ...draw(easyMinus, 5 + nHardPlus),
+      ];
+      draw(tasks, tasks.length); // shuffle positions
+
+      const grid = el("div", "aufgaben");
+      for (const [a, op, b] of tasks) {
+        const item = el("div", "aufgabe");
+        item.appendChild(Object.assign(el("span"), { textContent: `${a} ${op} ${b} =` }));
+        const box = el("div", "cell");
+        box.style.width = box.style.height = "15mm";
+        item.appendChild(box);
+        grid.appendChild(item);
+      }
+      return grid;
     },
   },
 };
@@ -613,7 +687,7 @@ function buildPicker() {
     sel.appendChild(opt);
   }
   sel.value = activeTpl;
-  sel.addEventListener("change", () => { activeTpl = sel.value; rollDeko(); buildOptions(); update(); });
+  sel.addEventListener("change", () => { activeTpl = sel.value; rollDeko(); buildOptions(); updateDice(); update(); });
 }
 
 function buildOptions() {
@@ -697,7 +771,9 @@ function renderSheet() {
     sheet.appendChild(title);
   }
 
-  sheet.appendChild(tpl.render(opts, CTX));
+  // rng is rebuilt per render so the same seed replays the identical sheet;
+  // XOR keeps the template stream distinct from the Schmuck stream
+  sheet.appendChild(tpl.render(opts, { ...CTX, rng: mulberry32(dekoSeed ^ 0x9E3779B9) }));
 
   renderDeko(sheet);
 
@@ -719,10 +795,14 @@ function fitPreview() {
 
 function update() { renderSheet(); fitPreview(); }
 
+/* 🎲 also re-rolls random templates, so it only disables
+   when neither Schmuck nor the active template uses the roll */
+function updateDice() { $("dice").disabled = !dekoOn && !TEMPLATES[activeTpl].random; }
+
 buildPicker();
 buildOptions();
 $("deko-on").checked = dekoOn;
-$("dice").disabled = !dekoOn;
+updateDice();
 update();
 window.addEventListener("resize", fitPreview);
 $("print").addEventListener("click", () => window.print());
@@ -730,7 +810,7 @@ $("dice").addEventListener("click", () => { rollDeko(); update(); });
 $("deko-on").addEventListener("change", (e) => {
   dekoOn = e.target.checked;
   localStorage.setItem("blattwerk:deko", dekoOn ? "1" : "0");
-  $("dice").disabled = !dekoOn;
+  updateDice();
   update();
 });
 </script>
