@@ -595,6 +595,49 @@ const TEMPLATES = {
     },
   },
 
+  buchstaben: {
+    name: "Buchstaben schreiben",
+    description: "Eine Zeile pro Buchstabe: 10 zufällige Großbuchstaben, im ersten Kästchen vorgegeben, der Rest der Zeile bleibt zum Üben frei.",
+    random: true,
+    options: [
+      { key: "title", label: "Titel",  type: "text",   default: "Buchstaben schreiben" },
+      { key: "cell",  label: "Kästchen", type: "select", default: "15", choices: [
+          { value: "15", label: "Groß (1,5 cm)" },
+          { value: "12", label: "Mittel (1,2 cm)" },
+          { value: "10", label: "Klein (1,0 cm)" },
+      ]},
+    ],
+    render(o, ctx) {
+      const rng = ctx.rng;
+      // seeded partial Fisher–Yates: 10 distinct letters from the 26-letter Grundalphabet
+      const pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+      for (let i = 0; i < 10; i++) {
+        const j = i + Math.floor(rng() * (pool.length - i));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+      }
+      const letters = pool.slice(0, 10);
+
+      const cell = parseFloat(o.cell);
+      const cols = Math.floor(ctx.widthMm / cell);
+      const rows = el("div", "rows");
+      rows.style.gap = "4mm";
+      for (const letter of letters) {
+        const row = el("div", "row");
+        for (let i = 0; i < cols; i++) {
+          const c = el("div", "cell" + (i === 0 ? " cell-model" : ""));
+          c.style.width = c.style.height = cell + "mm";
+          if (i === 0) {
+            c.textContent = letter;
+            c.style.fontSize = (cell * 0.58) + "mm";
+          }
+          row.appendChild(c);
+        }
+        rows.appendChild(row);
+      }
+      return rows;
+    },
+  },
+
   mathe1: {
     name: "Vorschule Mathe I",
     description: "20 Plus- und Minus-Aufgaben im Zahlenraum bis 20 — fünf davon mit Ergebnis über 10, der Rest bleibt fingerzählbar.",
