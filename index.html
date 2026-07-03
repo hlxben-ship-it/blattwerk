@@ -17,6 +17,10 @@
     --paper:    #FFFFFF;
     --given:    #F3F3F0;   /* fill of the pre-printed model square */
     --line:     #D5DAE0;   /* UI input borders */
+    /* Schmuck — garden pastels (sticker fills, outline stays --ink) */
+    --deko-green:  #BFE3B4;
+    --deko-blue:   #BBDDF2;
+    --deko-yellow: #FFE08A;
   }
 
   * { box-sizing: border-box; }
@@ -134,6 +138,34 @@
     line-height: 1.5;
   }
 
+  .deko-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .deko-check {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .deko-check input { accent-color: var(--pencil-deep); width: 16px; height: 16px; }
+  .btn-dice {
+    font: inherit;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--paper);
+    border: 1.5px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: border-color .15s ease;
+  }
+  .btn-dice:hover:enabled { border-color: var(--pencil-deep); }
+  .btn-dice:disabled { opacity: .45; cursor: default; }
+
   .warn {
     display: none;
     font-size: 13px;
@@ -152,6 +184,7 @@
   .sheet-scaler { transform-origin: top left; }
 
   .sheet {
+    position: relative;   /* anchor for the Schmuck layer */
     width: 210mm;
     min-height: 297mm;
     padding: 12mm;
@@ -159,6 +192,22 @@
     box-shadow: 0 4px 24px rgba(38, 48, 58, .14);
     border-radius: 2px;
   }
+
+  /* Schmuck — decoration layer, always behind and out of the content flow */
+  .deko {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .deko-footer {
+    position: absolute;
+    left: 12mm;
+    bottom: 7mm;
+    width: 186mm;
+  }
+  .deko-title-motif { flex: 0 0 auto; }
 
   .sheet-head {
     display: flex;
@@ -252,6 +301,13 @@
 
     <hr class="divider">
 
+    <div class="deko-bar">
+      <label class="deko-check"><input type="checkbox" id="deko-on"> Schmuck</label>
+      <button class="btn-dice" id="dice" title="Schmuck neu würfeln">🎲 Neu würfeln</button>
+    </div>
+
+    <hr class="divider">
+
     <button class="btn-print" id="print">Drucken</button>
     <p class="hint">Tipp: Im Druckdialog „Kopf- und Fußzeilen“ ausschalten, dann bleibt das Blatt sauber.</p>
     <div class="warn" id="warn">Passt nicht auf eine Seite — weniger Zeilen oder kleinere Kästchen wählen.</div>
@@ -271,6 +327,207 @@
 /* ============ geometry (mm) ============ */
 const PAGE = { w: 210, h: 297, pad: 12 };
 const CTX  = { widthMm: PAGE.w - 2 * PAGE.pad, heightMm: PAGE.h - 2 * PAGE.pad };
+
+/* ============ Schmuck (decoration layer) ============
+   Shell-owned, template-agnostic. A seeded roll picks one of four
+   hand-designed footer patterns (Wiese, Girlande, Ecke, Streu) and fills
+   its slots from the motif pool; sometimes one tiny motif joins the title.
+   Same seed → same sheet. The decoration yields to the exercise —
+   it can never push content to page 2 or trigger the overflow warning. */
+
+const INK = "#26303A";
+const PASTELS = (() => {
+  const css = getComputedStyle(document.documentElement);
+  return {
+    green:  css.getPropertyValue("--deko-green").trim(),
+    blue:   css.getPropertyValue("--deko-blue").trim(),
+    yellow: css.getPropertyValue("--deko-yellow").trim(),
+  };
+})();
+
+/* deterministic PRNG — same seed, same decoration */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const S = (sw) => `stroke="${INK}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"`;
+
+/* motif pool — 24×24 boxes, sticker look: pastel fill + ink outline */
+const MOTIFS = [
+  { id: "blatt", fills: ["green"], draw: (f, sw) =>
+      `<path d="M12 2.5 C18.5 7 19.5 15 12 21.5 C4.5 15 5.5 7 12 2.5 Z" fill="${f}" ${S(sw)}/>` +
+      `<path d="M12 6.5 V18" fill="none" ${S(sw)}/>` },
+  { id: "sproessling", fills: ["green"], draw: (f, sw) =>
+      `<path d="M12 21.5 V10.5" fill="none" ${S(sw)}/>` +
+      `<path d="M12 10.5 C6.5 10.5 3.8 6.2 4.8 2.5 C10 3.5 12 6.8 12 10.5 Z" fill="${f}" ${S(sw)}/>` +
+      `<path d="M12 13 C16.2 13 18.3 9.7 17.6 6.8 C13.6 7.6 12 10 12 13 Z" fill="${f}" ${S(sw)}/>` },
+  { id: "blume", fills: ["blue", "yellow"], draw: (f, sw) => {
+      let p = "";
+      for (let i = 0; i < 5; i++) {
+        const a = -Math.PI / 2 + i * 2 * Math.PI / 5;
+        p += `<circle cx="${(12 + 5.2 * Math.cos(a)).toFixed(2)}" cy="${(12 + 5.2 * Math.sin(a)).toFixed(2)}" r="3.7" fill="${f}" ${S(sw)}/>`;
+      }
+      return p + `<circle cx="12" cy="12" r="2.7" fill="${f === PASTELS.yellow ? PASTELS.blue : PASTELS.yellow}" ${S(sw)}/>`;
+    } },
+  { id: "tulpe", fills: ["yellow", "blue"], draw: (f, sw) =>
+      `<path d="M12 14.5 V21.5" fill="none" ${S(sw)}/>` +
+      `<path d="M12 18.6 C9.2 18.6 7.4 16.8 7 14.4" fill="none" ${S(sw)}/>` +
+      `<path d="M6.8 4.2 V9.5 a5.2 5.2 0 0 0 10.4 0 V4.2 C15.5 6.6 13.9 6.7 12.9 4.6 Q12 6.6 11.1 4.6 C10.1 6.7 8.5 6.6 6.8 4.2 Z" fill="${f}" ${S(sw)}/>` },
+  { id: "stern", fills: ["yellow"], draw: (f, sw) =>
+      `<path d="M12 2 L14.9 8.3 L21.8 8.9 L16.6 13.5 L18.1 20.3 L12 16.7 L5.9 20.3 L7.4 13.5 L2.2 8.9 L9.1 8.3 Z" fill="${f}" ${S(sw)}/>` },
+  { id: "sonne", fills: ["yellow"], draw: (f, sw) => {
+      let d = "";
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4 + Math.PI / 8;
+        d += `M${(12 + 6.8 * Math.cos(a)).toFixed(1)} ${(12 + 6.8 * Math.sin(a)).toFixed(1)} L${(12 + 9.4 * Math.cos(a)).toFixed(1)} ${(12 + 9.4 * Math.sin(a)).toFixed(1)} `;
+      }
+      return `<circle cx="12" cy="12" r="4.8" fill="${f}" ${S(sw)}/><path d="${d}" fill="none" ${S(sw)}/>`;
+    } },
+  { id: "wolke", fills: ["blue"], draw: (f, sw) =>
+      `<path d="M5 17.5 C2.6 17.5 1.5 15.8 1.5 14.2 C1.5 12.4 3 11.2 4.6 11.2 C4.9 8.1 7.4 6 10.3 6 C13 6 15.2 7.8 15.9 10.3 C18.4 10.3 20.5 11.9 20.5 14 C20.5 15.9 19 17.5 16.8 17.5 Z" fill="${f}" ${S(sw)}/>` },
+  { id: "pilz", fills: ["yellow", "blue", "green"], draw: (f, sw) =>
+      `<path d="M9.7 12.8 c.4 2.8 -.3 5.2 -1 6.9 a8.5 8.5 0 0 0 6.6 0 c-.7 -1.7 -1.4 -4.1 -1 -6.9 Z" fill="#FFFFFF" ${S(sw)}/>` +
+      `<path d="M3.6 12.8 C3.6 7.2 7.4 3.4 12 3.4 s8.4 3.8 8.4 9.4 Z" fill="${f}" ${S(sw)}/>` +
+      `<circle cx="8.3" cy="8.6" r="1.35" fill="#FFFFFF"/>` +
+      `<circle cx="13.2" cy="6.4" r="1.1" fill="#FFFFFF"/>` +
+      `<circle cx="15.9" cy="9.8" r="1.25" fill="#FFFFFF"/>` },
+  { id: "schnecke", fills: ["yellow", "blue", "green"], draw: (f, sw) =>
+      `<path d="M2.8 19.8 c0 -3.4 2.3 -5.6 4.9 -5.2" fill="none" ${S(sw)}/>` +
+      `<path d="M5.4 14.9 L4.2 12.2 M7 14.6 L7.3 11.8" fill="none" ${S(sw)}/>` +
+      `<circle cx="4.2" cy="11.9" r=".8" fill="${INK}"/><circle cx="7.4" cy="11.5" r=".8" fill="${INK}"/>` +
+      `<circle cx="14.2" cy="14" r="5.8" fill="${f}" ${S(sw)}/>` +
+      `<path d="M14.2 14 a2.3 2.3 0 0 1 2.3 2.3 A4.2 4.2 0 0 1 10 14.6" fill="none" ${S(sw)}/>` +
+      `<path d="M2.8 19.8 H19.2" fill="none" ${S(sw)}/>` },
+  { id: "stift", fills: ["yellow"], draw: (f, sw) =>
+      `<path d="M3.8 20.2 L5.2 14.9 L16.1 4 A2.7 2.7 0 0 1 19.9 7.8 L9 18.7 L3.8 20.2 Z" fill="${f}" ${S(sw)}/>` +
+      `<path d="M5.2 14.9 L9 18.7" fill="none" ${S(sw)}/>` +
+      `<path d="M3.8 20.2 L4.4 17.9 L6.1 19.6 Z" fill="${INK}" ${S(sw)}/>` },
+  { id: "herz", fills: ["yellow", "blue", "green"], draw: (f, sw) =>
+      `<path d="M12 20.5 C5.2 15.5 3.6 10.9 6.2 8.2 a4.1 4.1 0 0 1 5.8 .2 a4.1 4.1 0 0 1 5.8 -.2 c2.6 2.7 1 7.3 -5.8 12.3 Z" fill="${f}" ${S(sw)}/>` },
+  { id: "schmetterling", fills: ["yellow", "blue", "green"], draw: (f, sw) =>
+      `<ellipse cx="6.6" cy="9.4" rx="4.1" ry="3.2" transform="rotate(-28 6.6 9.4)" fill="${f}" ${S(sw)}/>` +
+      `<ellipse cx="17.4" cy="9.4" rx="4.1" ry="3.2" transform="rotate(28 17.4 9.4)" fill="${f}" ${S(sw)}/>` +
+      `<ellipse cx="7.9" cy="15.8" rx="2.8" ry="2.3" transform="rotate(22 7.9 15.8)" fill="${f}" ${S(sw)}/>` +
+      `<ellipse cx="16.1" cy="15.8" rx="2.8" ry="2.3" transform="rotate(-22 16.1 15.8)" fill="${f}" ${S(sw)}/>` +
+      `<path d="M12 7.2 V18.8 M12 7.2 L9.6 3.8 M12 7.2 L14.4 3.8" fill="none" ${S(sw)}/>` +
+      `<circle cx="9.4" cy="3.6" r=".8" fill="${INK}"/><circle cx="14.6" cy="3.6" r=".8" fill="${INK}"/>` },
+];
+
+function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+function pickDistinct(rng, n) {
+  const pool = MOTIFS.slice(), out = [];
+  for (let i = 0; i < n && pool.length; i++) out.push(pool.splice(Math.floor(rng() * pool.length), 1)[0]);
+  return out;
+}
+function motifMarkup(rng, m, sw) { return m.draw(PASTELS[pick(rng, m.fills)], sw); }
+const clampMm = (v, min, max) => Math.min(max, Math.max(min, v));
+
+/* place a motif in footer coords (mm); stroke stays ≈0.42 mm at any size */
+function placed(rng, m, x, y, size, rot, anchor) {
+  const s = size / 24;
+  const sw = Math.round((0.42 / s) * 100) / 100;
+  const tx = x - 12 * s;
+  const ty = anchor === "bottom" ? y - 24 * s : y - 12 * s;
+  return `<g transform="translate(${tx.toFixed(2)} ${ty.toFixed(2)}) scale(${s.toFixed(3)}) rotate(${rot.toFixed(1)} 12 12)">${motifMarkup(rng, m, sw)}</g>`;
+}
+
+/* the four layout patterns — composed randomness, no chaotic rolls */
+function wiese(rng, W, H) {
+  const gy = H - 1.2, k = H / 22;
+  let d = `M2 ${gy}`;
+  for (let x = 2; x < W - 4; x += 22.75) d += ` q 11.4 ${(rng() * 1.6 - 0.8).toFixed(2)} 22.75 0`;
+  let out = `<path d="${d}" fill="none" ${S(0.4)}/>`;
+  const n = 4 + Math.floor(rng() * 3);
+  const slot = (W - 8) / n;
+  const ms = pickDistinct(rng, n);
+  for (let i = 0; i < n; i++) {
+    const x = 4 + slot * i + slot * (0.25 + 0.5 * rng());
+    out += placed(rng, ms[i], x, gy + 0.2, (9 + rng() * 4) * k, rng() * 14 - 7, "bottom");
+  }
+  return out;
+}
+function girlande(rng, W, H) {
+  const x0 = 7, x1 = W - 7, cx = W / 2, cy = H + 3;
+  let out = `<path d="M${x0} 3.2 Q ${cx} ${cy} ${x1} 3.2" fill="none" ${S(0.4)} stroke-dasharray="0.1 1.7"/>`;
+  const n = 5 + Math.floor(rng() * 3);
+  const ms = pickDistinct(rng, n);
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n, u = 1 - t;
+    const x = u * u * x0 + 2 * u * t * cx + t * t * x1;
+    const y = u * u * 3.2 + 2 * u * t * cy + t * t * 3.2;
+    out += placed(rng, ms[i], x, y, (6 + rng() * 2.5) * (H / 22), rng() * 20 - 10, "center");
+  }
+  return out;
+}
+function ecke(rng, W, H) {
+  const left = rng() < 0.5, gy = H - 1.2, k = H / 22, dir = left ? 1 : -1;
+  let x = left ? 8 : W - 8;
+  let out = "";
+  const n = 3 + (rng() < 0.5 ? 1 : 0);
+  const ms = pickDistinct(rng, n);
+  let size = 13 * k;
+  for (let i = 0; i < n; i++) {
+    out += placed(rng, ms[i], x, gy + 0.2, size, rng() * 12 - 6, "bottom");
+    x += dir * (size * 0.62 + 2);
+    size *= 0.76;
+  }
+  return out;
+}
+function streu(rng, W, H) {
+  let out = "";
+  const ms = pickDistinct(rng, 3);
+  for (let i = 0; i < 3; i++) {
+    const x = clampMm(16 + i * ((W - 32) / 2) + (rng() * 26 - 13), 8, W - 8);
+    const y = 5.5 + rng() * (H - 11);
+    out += placed(rng, ms[i], x, y, (6 + rng() * 2) * (H / 22), rng() * 24 - 12, "center");
+  }
+  for (let i = 0; i < 4; i++) {
+    const x = 6 + rng() * (W - 12), y = 3.5 + rng() * (H - 7);
+    out += `<path transform="translate(${x.toFixed(1)} ${y.toFixed(1)})" d="M0 -1.7 L0.45 -0.45 L1.7 0 L0.45 0.45 L0 1.7 L-0.45 0.45 L-1.7 0 L-0.45 -0.45 Z" fill="${INK}"/>`;
+  }
+  return out;
+}
+const PATTERNS = [wiese, girlande, ecke, streu];
+
+function renderDeko(sheet) {
+  if (!dekoOn) return;
+  const rect = sheet.getBoundingClientRect();
+  const pxPerMm = rect.width / PAGE.w;
+  const contentBottom = (sheet.lastElementChild.getBoundingClientRect().bottom - rect.top) / pxPerMm;
+
+  const rng = mulberry32(dekoSeed);
+  // fixed draw order: the roll stays stable while the footer adapts to content
+  const pattern = pick(rng, PATTERNS);
+  const wantTitleMotif = rng() < 0.55;
+  const titleLeft = rng() < 0.5;
+  const titleMotif = pick(rng, MOTIFS);
+
+  // the footer yields: full (22 mm) → compact (15 mm) → none
+  let h = 0;
+  if (contentBottom <= 264) h = 22;
+  else if (contentBottom <= 271) h = 15;
+
+  const layer = el("div", "deko");
+  if (h) {
+    layer.innerHTML =
+      `<svg class="deko-footer" style="height:${h}mm" viewBox="0 0 186 ${h}" xmlns="http://www.w3.org/2000/svg">` +
+      pattern(rng, 186, h) + `</svg>`;
+  }
+  sheet.appendChild(layer);
+
+  const title = sheet.querySelector(".sheet-title");
+  if (wantTitleMotif && title) {
+    const span = el("span", "deko-title-motif");
+    span.innerHTML = `<svg width="7mm" height="7mm" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">${motifMarkup(rng, titleMotif, 1.6)}</svg>`;
+    title[titleLeft ? "prepend" : "append"](span);
+  }
+}
 
 /* ============ template registry ============
    A template is one declarative object:
@@ -325,6 +582,15 @@ function el(tag, cls) { const e = document.createElement(tag); if (cls) e.classN
 let activeTpl = localStorage.getItem("blattwerk:tpl") || "zahlen";
 if (!TEMPLATES[activeTpl]) activeTpl = "zahlen";
 
+/* Schmuck state — the roll survives reloads; option edits keep it */
+let dekoOn = localStorage.getItem("blattwerk:deko") !== "0";
+let dekoSeed = parseInt(localStorage.getItem("blattwerk:dekoSeed"), 10);
+if (!Number.isFinite(dekoSeed)) rollDeko();
+function rollDeko() {
+  dekoSeed = Math.floor(Math.random() * 4294967296);
+  localStorage.setItem("blattwerk:dekoSeed", dekoSeed);
+}
+
 function loadOpts(tplId) {
   const tpl = TEMPLATES[tplId];
   const saved = JSON.parse(localStorage.getItem("blattwerk:opts:" + tplId) || "{}");
@@ -347,7 +613,7 @@ function buildPicker() {
     sel.appendChild(opt);
   }
   sel.value = activeTpl;
-  sel.addEventListener("change", () => { activeTpl = sel.value; buildOptions(); update(); });
+  sel.addEventListener("change", () => { activeTpl = sel.value; rollDeko(); buildOptions(); update(); });
 }
 
 function buildOptions() {
@@ -433,6 +699,8 @@ function renderSheet() {
 
   sheet.appendChild(tpl.render(opts, CTX));
 
+  renderDeko(sheet);
+
   // screen-only guard: does it still fit one A4 page?
   // the sheet grows with its content (min-height), so compare against fixed A4 height
   const a4h = parseFloat(getComputedStyle(sheet).minHeight);
@@ -453,9 +721,18 @@ function update() { renderSheet(); fitPreview(); }
 
 buildPicker();
 buildOptions();
+$("deko-on").checked = dekoOn;
+$("dice").disabled = !dekoOn;
 update();
 window.addEventListener("resize", fitPreview);
 $("print").addEventListener("click", () => window.print());
+$("dice").addEventListener("click", () => { rollDeko(); update(); });
+$("deko-on").addEventListener("change", (e) => {
+  dekoOn = e.target.checked;
+  localStorage.setItem("blattwerk:deko", dekoOn ? "1" : "0");
+  $("dice").disabled = !dekoOn;
+  update();
+});
 </script>
 
 </body>
