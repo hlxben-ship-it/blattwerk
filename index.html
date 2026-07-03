@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blattwerk — Übungsblätter zum Ausdrucken</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3E%3Ccircle cx='15' cy='15' r='14' fill='%23FFC81E'/%3E%3Cpath d='M9.5 20.5 L10.5 16.5 L18.5 8.5 L22 12 L14 20 Z' fill='none' stroke='%2326303A' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  /* ============ tokens ============ */
+  :root {
+    --ink:      #26303A;   /* charcoal — lines & text */
+    --ink-soft: #5B6772;   /* muted labels */
+    --pencil:   #FFC81E;   /* HB pencil yellow — the one accent */
+    --pencil-deep: #E8B200;
+    --grid:     #D9E6F2;   /* Karopapier blue */
+    --desk:     #FAFBFA;
+    --paper:    #FFFFFF;
+    --given:    #F3F3F0;   /* fill of the pre-printed model square */
+    --line:     #D5DAE0;   /* UI input borders */
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; padding: 0; }
+
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    /* the desk is squared paper — the app lives in the child's notebook */
+    background-color: var(--desk);
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .app {
+    display: flex;
+    align-items: flex-start;
+    gap: 32px;
+    padding: 32px;
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+
+  /* ============ sidebar (parent UI) ============ */
+  .sidebar {
+    flex: 0 0 300px;
+    position: sticky;
+    top: 32px;
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 24px;
+    box-shadow: 0 2px 10px rgba(38, 48, 58, .06);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 2px;
+  }
+  .brand svg { flex: 0 0 auto; }
+  .brand h1 {
+    font-family: "Comic Sans MS", "Segoe Print", cursive;
+    font-size: 26px;
+    margin: 0;
+    letter-spacing: .5px;
+  }
+  .tagline {
+    margin: 0 0 20px;
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--ink-soft);
+    margin-bottom: 5px;
+  }
+  .field input, .field select {
+    width: 100%;
+    font: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    padding: 8px 10px;
+    border: 1.5px solid var(--line);
+    border-radius: 8px;
+    background: var(--paper);
+  }
+  .field input:focus-visible, .field select:focus-visible,
+  button:focus-visible {
+    outline: 3px solid var(--pencil);
+    outline-offset: 1px;
+  }
+
+  .field-row { display: flex; gap: 10px; }
+  .field-row .field { flex: 1; }
+
+  .tpl-desc {
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin: -6px 0 16px;
+    line-height: 1.45;
+  }
+
+  .divider { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+
+  .btn-print {
+    width: 100%;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--ink);
+    background: var(--pencil);
+    border: none;
+    border-radius: 10px;
+    padding: 12px;
+    cursor: pointer;
+    transition: background .15s ease;
+  }
+  .btn-print:hover { background: var(--pencil-deep); }
+
+  .hint {
+    font-size: 12px;
+    color: var(--ink-soft);
+    margin: 12px 0 0;
+    line-height: 1.5;
+  }
+
+  .warn {
+    display: none;
+    font-size: 13px;
+    background: #FBEAE7;
+    border: 1px solid #E4A69C;
+    border-radius: 8px;
+    padding: 9px 11px;
+    margin-top: 12px;
+    line-height: 1.45;
+  }
+  .warn.show { display: block; }
+
+  /* ============ the sheet (child's world, true A4) ============ */
+  .stage { flex: 1; min-width: 0; }
+
+  .sheet-scaler { transform-origin: top left; }
+
+  .sheet {
+    width: 210mm;
+    min-height: 297mm;
+    padding: 12mm;
+    background: var(--paper);
+    box-shadow: 0 4px 24px rgba(38, 48, 58, .14);
+    border-radius: 2px;
+  }
+
+  .sheet-head {
+    display: flex;
+    align-items: flex-end;
+    gap: 12mm;
+    font-family: "Comic Sans MS", "Segoe Print", cursive;
+    font-size: 13pt;
+  }
+  .write-line {
+    display: flex;
+    align-items: flex-end;
+    gap: 3mm;
+  }
+  .write-line .rule {
+    border-bottom: 0.4mm solid var(--ink);
+    height: 9mm;
+  }
+  .write-name { flex: 1; }
+  .write-name .rule { flex: 1; }
+  .write-date .rule { width: 42mm; }
+
+  .sheet-title {
+    font-family: "Comic Sans MS", "Segoe Print", cursive;
+    font-size: 21pt;
+    text-align: center;
+    margin: 7mm 0 8mm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4mm;
+  }
+
+  /* rows of Kästchen — friendly rounded strips, shared inner borders */
+  .rows { display: flex; flex-direction: column; align-items: center; }
+  .row  { display: flex; }
+  .cell {
+    border: 0.3mm solid var(--ink);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Comic Sans MS", "Segoe Print", cursive;
+  }
+  .cell + .cell { border-left: none; }
+  .row .cell:first-child { border-radius: 1.5mm 0 0 1.5mm; }
+  .row .cell:last-child  { border-radius: 0 1.5mm 1.5mm 0; }
+  .cell-model {
+    background: var(--given);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ============ print ============ */
+  @page { size: A4 portrait; margin: 0; }
+
+  @media print {
+    body { background: none; }
+    .app { display: block; padding: 0; max-width: none; }
+    .sidebar { display: none; }
+    .sheet-scaler { transform: none !important; height: auto !important; }
+    .sheet { box-shadow: none; border-radius: 0; margin: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <!-- pencil mark -->
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+        <circle cx="15" cy="15" r="14" fill="var(--pencil)"/>
+        <path d="M9.5 20.5 L10.5 16.5 L18.5 8.5 L22 12 L14 20 L9.5 20.5 Z"
+              fill="none" stroke="var(--ink)" stroke-width="1.6" stroke-linejoin="round"/>
+      </svg>
+      <h1>Blattwerk</h1>
+    </div>
+    <p class="tagline">Übungsblätter zum Ausdrucken</p>
+
+    <div class="field">
+      <label for="tpl">Vorlage</label>
+      <select id="tpl"></select>
+    </div>
+    <p class="tpl-desc" id="tpl-desc"></p>
+
+    <div id="opts"><!-- per-template options render here --></div>
+
+    <hr class="divider">
+
+    <button class="btn-print" id="print">Drucken</button>
+    <p class="hint">Tipp: Im Druckdialog „Kopf- und Fußzeilen“ ausschalten, dann bleibt das Blatt sauber.</p>
+    <div class="warn" id="warn">Passt nicht auf eine Seite — weniger Zeilen oder kleinere Kästchen wählen.</div>
+  </aside>
+
+  <main class="stage">
+    <div class="sheet-scaler" id="scaler">
+      <div class="sheet" id="sheet"><!-- rendered worksheet --></div>
+    </div>
+  </main>
+
+</div>
+
+<script>
+"use strict";
+
+/* ============ geometry (mm) ============ */
+const PAGE = { w: 210, h: 297, pad: 12 };
+const CTX  = { widthMm: PAGE.w - 2 * PAGE.pad, heightMm: PAGE.h - 2 * PAGE.pad };
+
+/* ============ template registry ============
+   A template is one declarative object:
+     name / description  — shown in the picker
+     options[]           — rendered generically by the shell
+     render(opts, ctx)   — returns the sheet body as a DOM node
+   The shell owns the header (Name / Datum / Titel) and printing.
+   Adding a worksheet type = adding one entry here.               */
+const TEMPLATES = {
+  zahlen: {
+    name: "Zahlen schreiben",
+    description: "Eine Zeile pro Zahl: die Zahl steht im ersten Kästchen, der Rest der Zeile bleibt zum Üben frei.",
+    options: [
+      { key: "title", label: "Titel",  type: "text",   default: "Zahlen schreiben" },
+      { key: "from",  label: "Von",    type: "number", default: 1,  min: 0, max: 99 },
+      { key: "to",    label: "Bis",    type: "number", default: 10, min: 0, max: 99 },
+      { key: "cell",  label: "Kästchen", type: "select", default: "15", choices: [
+          { value: "15", label: "Groß (1,5 cm)" },
+          { value: "12", label: "Mittel (1,2 cm)" },
+          { value: "10", label: "Klein (1,0 cm)" },
+      ]},
+    ],
+    render(o, ctx) {
+      const cell = parseFloat(o.cell);
+      const cols = Math.floor(ctx.widthMm / cell);
+      const from = Math.min(o.from, o.to);
+      const to   = Math.max(o.from, o.to);
+      const rows = el("div", "rows");
+      rows.style.gap = "4mm";
+      for (let n = from; n <= to; n++) {
+        const row = el("div", "row");
+        for (let i = 0; i < cols; i++) {
+          const c = el("div", "cell" + (i === 0 ? " cell-model" : ""));
+          c.style.width = c.style.height = cell + "mm";
+          if (i === 0) {
+            c.textContent = n;
+            c.style.fontSize = (cell * 0.58) + "mm";
+          }
+          row.appendChild(c);
+        }
+        rows.appendChild(row);
+      }
+      return rows;
+    },
+  },
+};
+
+/* ============ shell ============ */
+const $ = (id) => document.getElementById(id);
+function el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+let activeTpl = localStorage.getItem("blattwerk:tpl") || "zahlen";
+if (!TEMPLATES[activeTpl]) activeTpl = "zahlen";
+
+function loadOpts(tplId) {
+  const tpl = TEMPLATES[tplId];
+  const saved = JSON.parse(localStorage.getItem("blattwerk:opts:" + tplId) || "{}");
+  const opts = {};
+  for (const o of tpl.options) opts[o.key] = saved[o.key] !== undefined ? saved[o.key] : o.default;
+  return opts;
+}
+function saveOpts(tplId, opts) {
+  localStorage.setItem("blattwerk:tpl", tplId);
+  localStorage.setItem("blattwerk:opts:" + tplId, JSON.stringify(opts));
+}
+
+function buildPicker() {
+  const sel = $("tpl");
+  sel.innerHTML = "";
+  for (const [id, t] of Object.entries(TEMPLATES)) {
+    const opt = el("option");
+    opt.value = id;
+    opt.textContent = t.name;
+    sel.appendChild(opt);
+  }
+  sel.value = activeTpl;
+  sel.addEventListener("change", () => { activeTpl = sel.value; buildOptions(); update(); });
+}
+
+function buildOptions() {
+  const tpl = TEMPLATES[activeTpl];
+  $("tpl-desc").textContent = tpl.description;
+  const box = $("opts");
+  box.innerHTML = "";
+  const opts = loadOpts(activeTpl);
+
+  let numberRow = null; // pair up consecutive number fields side by side
+  for (const o of tpl.options) {
+    const field = el("div", "field");
+    const label = el("label");
+    label.textContent = o.label;
+    label.htmlFor = "opt-" + o.key;
+    field.appendChild(label);
+
+    let input;
+    if (o.type === "select") {
+      input = el("select");
+      for (const c of o.choices) {
+        const oe = el("option");
+        oe.value = c.value; oe.textContent = c.label;
+        input.appendChild(oe);
+      }
+      input.value = opts[o.key];
+    } else {
+      input = el("input");
+      input.type = o.type;
+      if (o.min !== undefined) input.min = o.min;
+      if (o.max !== undefined) input.max = o.max;
+      input.value = opts[o.key];
+    }
+    input.id = "opt-" + o.key;
+    input.dataset.key = o.key;
+    input.dataset.type = o.type;
+    input.addEventListener("input", update);
+    field.appendChild(input);
+
+    if (o.type === "number") {
+      if (!numberRow) { numberRow = el("div", "field-row"); box.appendChild(numberRow); }
+      numberRow.appendChild(field);
+    } else {
+      numberRow = null;
+      box.appendChild(field);
+    }
+  }
+}
+
+function readOpts() {
+  const opts = {};
+  for (const input of $("opts").querySelectorAll("[data-key]")) {
+    opts[input.dataset.key] =
+      input.dataset.type === "number" ? (parseInt(input.value, 10) || 0) : input.value;
+  }
+  return opts;
+}
+
+function renderSheet() {
+  const tpl = TEMPLATES[activeTpl];
+  const opts = readOpts();
+  saveOpts(activeTpl, opts);
+
+  const sheet = $("sheet");
+  sheet.innerHTML = "";
+
+  // shell-owned header: Name (left) · Datum (right) · Titel
+  const head = el("div", "sheet-head");
+  const name = el("div", "write-line write-name");
+  name.appendChild(Object.assign(el("span"), { textContent: "Name:" }));
+  name.appendChild(el("span", "rule"));
+  const date = el("div", "write-line write-date");
+  date.appendChild(Object.assign(el("span"), { textContent: "Datum:" }));
+  date.appendChild(el("span", "rule"));
+  head.append(name, date);
+  sheet.appendChild(head);
+
+  if (opts.title) {
+    const title = el("div", "sheet-title");
+    title.textContent = opts.title;
+    sheet.appendChild(title);
+  }
+
+  sheet.appendChild(tpl.render(opts, CTX));
+
+  // screen-only guard: does it still fit one A4 page?
+  // the sheet grows with its content (min-height), so compare against fixed A4 height
+  const a4h = parseFloat(getComputedStyle(sheet).minHeight);
+  $("warn").classList.toggle("show", sheet.offsetHeight > a4h + 1);
+}
+
+/* true-size preview, scaled down only when the window is narrower than A4 */
+function fitPreview() {
+  const stage = document.querySelector(".stage");
+  const scaler = $("scaler");
+  const a4px = $("sheet").offsetWidth;
+  const scale = Math.min(1, stage.clientWidth / a4px);
+  scaler.style.transform = "scale(" + scale + ")";
+  scaler.style.height = ($("sheet").offsetHeight * scale) + "px";
+}
+
+function update() { renderSheet(); fitPreview(); }
+
+buildPicker();
+buildOptions();
+update();
+window.addEventListener("resize", fitPreview);
+$("print").addEventListener("click", () => window.print());
+</script>
+
+</body>
+</html>
