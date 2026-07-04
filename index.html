@@ -97,7 +97,7 @@
   }
 
   .field { margin-bottom: 14px; }
-  .field label {
+  .field > label, .field .field-label {
     display: block;
     font-size: 12px;
     font-weight: 600;
@@ -125,6 +125,63 @@
   .field-row { display: flex; gap: 10px; }
   .field-row .field { flex: 1; }
 
+  /* Vorlage picker — a sheet of stickers; the glyph is what the child practices.
+     Native radios (hidden, still focusable) keep keyboard + reader semantics. */
+  .tpl-cards {
+    position: relative;   /* containing block for the hidden radios */
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .tpl-cards input[type="radio"] {
+    position: absolute;
+    top: 0;
+    left: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .tpl-card {
+    --card-fill: var(--deko-yellow);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 5px;
+    padding: 10px 6px 8px;
+    background: var(--paper);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    cursor: pointer;
+    text-align: center;
+    transition: border-color .15s ease, background .15s ease, transform .15s ease;
+  }
+  .tpl-card:hover { border-color: var(--ink-soft); transform: translateY(-1px); }
+  .tpl-glyph {
+    font-family: "Comic Neue", "Comic Sans MS", "Segoe Print", cursive;
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1.25;
+    padding: 1px 10px;
+    background: var(--card-fill);
+    border: 1.5px solid var(--ink);
+    border-radius: 8px;
+  }
+  .tpl-name {
+    font-size: 12px;
+    line-height: 1.25;
+    color: var(--ink);
+  }
+  /* picked = the sticker is applied: pastel fill + ink outline (yellow stays actions-only) */
+  input:checked + .tpl-card {
+    border-color: var(--ink);
+    background: var(--card-fill);
+  }
+  input:checked + .tpl-card .tpl-glyph { background: var(--paper); }
+  input:focus-visible + .tpl-card {
+    outline: 3px solid var(--pencil);
+    outline-offset: 1px;
+  }
+
   .tpl-desc {
     font-size: 13px;
     color: var(--ink-soft);
@@ -134,20 +191,23 @@
 
   .divider { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
 
+  /* the one loud thing in the sidebar — a fat yellow sticker you press */
   .btn-print {
     width: 100%;
     font: inherit;
-    font-size: 16px;
-    font-weight: 600;
+    font-size: 17px;
+    font-weight: 700;
     color: var(--ink);
     background: var(--pencil);
-    border: none;
-    border-radius: 10px;
+    border: 2px solid var(--ink);
+    border-radius: 999px;
     padding: 12px;
     cursor: pointer;
-    transition: background .15s ease;
+    box-shadow: 0 2px 0 var(--ink);
+    transition: background .15s ease, transform .15s ease, box-shadow .15s ease;
   }
-  .btn-print:hover { background: var(--pencil-deep); }
+  .btn-print:hover { background: var(--pencil-deep); transform: translateY(-1px); box-shadow: 0 3px 0 var(--ink); }
+  .btn-print:active { transform: translateY(1px); box-shadow: 0 1px 0 var(--ink); }
 
   .hint {
     font-size: 12px;
@@ -175,14 +235,14 @@
     font-size: 13px;
     color: var(--ink);
     background: var(--paper);
-    border: 1.5px solid var(--line);
-    border-radius: 8px;
+    border: 2px solid var(--ink);
+    border-radius: 10px;
     padding: 6px 10px;
     cursor: pointer;
-    transition: border-color .15s ease;
+    transition: transform .15s ease, background .15s ease;
   }
-  .btn-dice:hover:enabled { border-color: var(--pencil-deep); }
-  .btn-dice:disabled { opacity: .45; cursor: default; }
+  .btn-dice:hover:enabled { background: var(--deko-blue); transform: rotate(-2deg); }
+  .btn-dice:disabled { opacity: .45; cursor: default; border-color: var(--line); }
 
   .warn {
     display: none;
@@ -312,8 +372,48 @@
     .sheet:not(:last-child) { break-after: page; page-break-after: always; }
   }
 
+  /* ============ micro-moments (screen only, motion-safe) ============ */
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .sheet { animation: sheet-settle .3s ease-out; }
+    @keyframes sheet-settle {
+      from { opacity: 0; transform: translateY(3px); }
+    }
+    input:checked + .tpl-card { animation: card-pop .25s ease; }
+    @keyframes card-pop {
+      50% { transform: scale(1.05); }
+    }
+    .btn-dice.rolling { animation: dice-roll .45s ease; }
+    @keyframes dice-roll {
+      25% { transform: rotate(-14deg); }
+      60% { transform: rotate(10deg); }
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
+  }
+
+  /* ============ phone (parent prints from the iPhone) ============ */
+  @media screen and (max-width: 800px) {
+    .app {
+      flex-direction: column;   /* controls first, sheet below */
+      align-items: stretch;     /* let the stage take the viewport width, not the A4 width */
+      gap: 20px;
+      padding: 16px;
+    }
+    .sidebar {
+      position: static;
+      flex: 0 0 auto;
+      width: 100%;
+    }
+    /* the scaled A4 keeps its layout width — clip it so the page can't pan sideways */
+    .stage { overflow-x: hidden; }
+    /* touch sizing; 16px inputs also stop iOS focus-zoom */
+    .field input, .field select { font-size: 16px; padding: 11px 12px; }
+    .tpl-card { min-height: 72px; }
+    .btn-dice { padding: 12px 14px; }
+    .btn-print { padding: 14px; }
+    .deko-check input { width: 20px; height: 20px; }
   }
 </style>
 </head>
@@ -334,8 +434,8 @@
     <p class="tagline">Übungsblätter zum Ausdrucken</p>
 
     <div class="field">
-      <label for="tpl">Vorlage</label>
-      <select id="tpl"></select>
+      <span class="field-label" id="tpl-label">Vorlage</span>
+      <div class="tpl-cards" id="tpl-cards" role="radiogroup" aria-labelledby="tpl-label"></div>
     </div>
     <p class="tpl-desc" id="tpl-desc"></p>
 
@@ -575,7 +675,8 @@ function renderDeko(sheet, rng) {
 
 /* ============ template registry ============
    A template is one declarative object:
-     name / description  — shown in the picker
+     name / glyph / description — shown in the picker (glyph: short Comic-Neue
+                           sample of what the child practices, e.g. "123")
      options[]           — rendered generically by the shell
      random              — true if render draws from ctx.rng (keeps 🎲 enabled)
      render(opts, ctx)   — returns the sheet body as a DOM node
@@ -586,6 +687,7 @@ function renderDeko(sheet, rng) {
 const TEMPLATES = {
   zahlen: {
     name: "Zahlen schreiben",
+    glyph: "123",
     description: "Eine Zeile pro Zahl: die Zahl steht im ersten Kästchen, der Rest der Zeile bleibt zum Üben frei.",
     options: [
       { key: "title", label: "Titel",  type: "text",   default: "Zahlen schreiben" },
@@ -623,6 +725,7 @@ const TEMPLATES = {
 
   buchstaben: {
     name: "Buchstaben schreiben",
+    glyph: "ABC",
     description: "Eine Zeile pro Buchstabe: 10 zufällige Großbuchstaben, im ersten Kästchen vorgegeben, der Rest der Zeile bleibt zum Üben frei.",
     random: true,
     options: [
@@ -666,6 +769,7 @@ const TEMPLATES = {
 
   mathe1: {
     name: "Vorschule Mathe I",
+    glyph: "8+9",
     description: "20 Plus- und Minus-Aufgaben im Zahlenraum bis 20 — fünf davon mit Ergebnis über 10, der Rest bleibt fingerzählbar.",
     random: true,
     options: [
@@ -719,6 +823,7 @@ const TEMPLATES = {
 
   mathe0: {
     name: "Vorschule Mathe 0",
+    glyph: "2+3",
     description: "20 Plus- und Minus-Aufgaben im Zahlenraum bis 10 — alle Aufgaben gleich schwer.",
     random: true,
     options: [
@@ -792,17 +897,31 @@ function saveOpts(tplId, opts) {
   localStorage.setItem("blattwerk:opts:" + tplId, JSON.stringify(opts));
 }
 
+/* pastel card fills — passive, cycled per card; yellow stays reserved for actions */
+const CARD_FILLS = ["var(--deko-yellow)", "var(--deko-blue)", "var(--deko-green)"];
+
 function buildPicker() {
-  const sel = $("tpl");
-  sel.innerHTML = "";
-  for (const [id, t] of Object.entries(TEMPLATES)) {
-    const opt = el("option");
-    opt.value = id;
-    opt.textContent = t.name;
-    sel.appendChild(opt);
-  }
-  sel.value = activeTpl;
-  sel.addEventListener("change", () => { activeTpl = sel.value; rollDeko(); buildOptions(); updateDice(); update(); });
+  const box = $("tpl-cards");
+  box.innerHTML = "";
+  Object.entries(TEMPLATES).forEach(([id, t], i) => {
+    const input = el("input");
+    input.type = "radio";
+    input.name = "tpl";
+    input.id = "tpl-" + id;
+    input.checked = id === activeTpl;
+    input.addEventListener("change", () => { activeTpl = id; rollDeko(); buildOptions(); updateDice(); update(); });
+
+    const card = el("label", "tpl-card");
+    card.htmlFor = input.id;
+    card.style.setProperty("--card-fill", CARD_FILLS[i % CARD_FILLS.length]);
+    const glyph = el("span", "tpl-glyph");
+    glyph.textContent = t.glyph || t.name.slice(0, 2);
+    const name = el("span", "tpl-name");
+    name.textContent = t.name;
+    card.append(glyph, name);
+
+    box.append(input, card);
+  });
 }
 
 function buildOptions() {
@@ -940,7 +1059,14 @@ updateDice();
 update();
 window.addEventListener("resize", fitPreview);
 $("print").addEventListener("click", () => window.print());
-$("dice").addEventListener("click", () => { rollDeko(); update(); });
+$("dice").addEventListener("click", () => {
+  rollDeko();
+  update();
+  const d = $("dice");
+  d.classList.remove("rolling");
+  void d.offsetWidth; // restart the roll animation on rapid clicks
+  d.classList.add("rolling");
+});
 $("deko-on").addEventListener("change", (e) => {
   dekoOn = e.target.checked;
   localStorage.setItem("blattwerk:deko", dekoOn ? "1" : "0");
