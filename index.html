@@ -210,6 +210,10 @@
     box-shadow: 0 4px 24px rgba(38, 48, 58, .14);
     border-radius: 2px;
   }
+  /* stacked multi-page preview — screen only, print paginates via break-after instead */
+  @media screen {
+    .sheet + .sheet { margin-top: 10mm; }
+  }
 
   /* Schmuck — decoration layer, always behind and out of the content flow */
   .deko {
@@ -304,6 +308,8 @@
     .sidebar { display: none; }
     .sheet-scaler { transform: none !important; height: auto !important; }
     .sheet { box-shadow: none; border-radius: 0; margin: 0; }
+    /* each sheet is its own physical page; no break after the last one */
+    .sheet:not(:last-child) { break-after: page; page-break-after: always; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -344,15 +350,18 @@
 
     <hr class="divider">
 
+    <div class="field">
+      <label for="pages">Anzahl Blätter</label>
+      <input type="number" id="pages" min="1" max="20">
+    </div>
+
     <button class="btn-print" id="print">Drucken</button>
     <p class="hint">Tipp: Im Druckdialog „Kopf- und Fußzeilen“ ausschalten, dann bleibt das Blatt sauber.</p>
     <div class="warn" id="warn">Passt nicht auf eine Seite — weniger Zeilen oder kleinere Kästchen wählen.</div>
   </aside>
 
   <main class="stage">
-    <div class="sheet-scaler" id="scaler">
-      <div class="sheet" id="sheet"><!-- rendered worksheet --></div>
-    </div>
+    <div class="sheet-scaler" id="scaler"><!-- rendered worksheets --></div>
   </main>
 
 </div>
@@ -531,13 +540,12 @@ function streu(rng, W, H) {
 }
 const PATTERNS = [wiese, girlande, ecke, streu];
 
-function renderDeko(sheet) {
+function renderDeko(sheet, rng) {
   if (!dekoOn) return;
   const rect = sheet.getBoundingClientRect();
   const pxPerMm = rect.width / PAGE.w;
   const contentBottom = (sheet.lastElementChild.getBoundingClientRect().bottom - rect.top) / pxPerMm;
 
-  const rng = mulberry32(dekoSeed);
   // fixed draw order: the roll stays stable while the footer adapts to content
   const pattern = pick(rng, PATTERNS);
   const wantTitleMotif = rng() < 0.55;
@@ -769,6 +777,9 @@ function rollDeko() {
   localStorage.setItem("blattwerk:dekoSeed", dekoSeed);
 }
 
+/* Anzahl Blätter — shell-owned like Schmuck, applies to every Vorlage */
+let pageCount = parseInt(localStorage.getItem("blattwerk:pages"), 10) || 1;
+
 function loadOpts(tplId) {
   const tpl = TEMPLATES[tplId];
   const saved = JSON.parse(localStorage.getItem("blattwerk:opts:" + tplId) || "{}");
@@ -850,13 +861,8 @@ function readOpts() {
   return opts;
 }
 
-function renderSheet() {
-  const tpl = TEMPLATES[activeTpl];
-  const opts = readOpts();
-  saveOpts(activeTpl, opts);
-
-  const sheet = $("sheet");
-  sheet.innerHTML = "";
+function buildSheet(tpl, opts, templateRng) {
+  const sheet = el("div", "sheet");
 
   // shell-owned header: Name (left) · Datum (right) · Titel
   const head = el("div", "sheet-head");
@@ -875,29 +881,52 @@ function renderSheet() {
     sheet.appendChild(title);
   }
 
-  // rng is rebuilt per render so the same seed replays the identical sheet;
-  // XOR keeps the template stream distinct from the Schmuck stream
-  sheet.appendChild(tpl.render(opts, { ...CTX, rng: mulberry32(dekoSeed ^ 0x9E3779B9) }));
-
-  renderDeko(sheet);
-
-  // screen-only guard: does it still fit one A4 page?
-  // the sheet grows with its content (min-height), so compare against fixed A4 height
-  const a4h = parseFloat(getComputedStyle(sheet).minHeight);
-  $("warn").classList.toggle("show", sheet.offsetHeight > a4h + 1);
+  sheet.appendChild(tpl.render(opts, { ...CTX, rng: templateRng }));
+  return sheet;
 }
 
-/* true-size preview, scaled down only when the window is narrower than A4 */
+function renderSheets() {
+  const tpl = TEMPLATES[activeTpl];
+  const opts = readOpts();
+  saveOpts(activeTpl, opts);
+
+  const scaler = $("scaler");
+  scaler.innerHTML = "";
+
+  // one meta stream draws a distinct sub-seed per page, so the same dekoSeed +
+  // pageCount always reproduces the identical N-page set; XOR still keeps each
+  // page's template stream distinct from its own Schmuck stream (per-sheet rule)
+  const metaRng = mulberry32(dekoSeed);
+  const sheets = [];
+  for (let i = 0; i < pageCount; i++) {
+    const pageSeed = Math.floor(metaRng() * 4294967296);
+    const sheet = buildSheet(tpl, opts, mulberry32(pageSeed ^ 0x9E3779B9));
+    scaler.appendChild(sheet); // attach before renderDeko — it measures live layout
+    renderDeko(sheet, mulberry32(pageSeed));
+    sheets.push(sheet);
+  }
+
+  // screen-only guard: does every page still fit one A4 page?
+  // sheets grow with their content (min-height), so compare against fixed A4 height
+  const a4h = parseFloat(getComputedStyle(sheets[0]).minHeight);
+  $("warn").classList.toggle("show", sheets.some((s) => s.offsetHeight > a4h + 1));
+}
+
+/* true-size preview, scaled down only when the window is narrower than A4;
+   stacked pages scale together so the on-screen preview matches print exactly */
 function fitPreview() {
   const stage = document.querySelector(".stage");
   const scaler = $("scaler");
-  const a4px = $("sheet").offsetWidth;
+  const sheets = scaler.querySelectorAll(".sheet");
+  const a4px = sheets[0].offsetWidth;
   const scale = Math.min(1, stage.clientWidth / a4px);
   scaler.style.transform = "scale(" + scale + ")";
-  scaler.style.height = ($("sheet").offsetHeight * scale) + "px";
+  const first = sheets[0].getBoundingClientRect();
+  const last = sheets[sheets.length - 1].getBoundingClientRect();
+  scaler.style.height = ((last.bottom - first.top) * scale) + "px";
 }
 
-function update() { renderSheet(); fitPreview(); }
+function update() { renderSheets(); fitPreview(); }
 
 /* 🎲 also re-rolls random templates, so it only disables
    when neither Schmuck nor the active template uses the roll */
@@ -906,6 +935,7 @@ function updateDice() { $("dice").disabled = !dekoOn && !TEMPLATES[activeTpl].ra
 buildPicker();
 buildOptions();
 $("deko-on").checked = dekoOn;
+$("pages").value = pageCount;
 updateDice();
 update();
 window.addEventListener("resize", fitPreview);
@@ -915,6 +945,11 @@ $("deko-on").addEventListener("change", (e) => {
   dekoOn = e.target.checked;
   localStorage.setItem("blattwerk:deko", dekoOn ? "1" : "0");
   updateDice();
+  update();
+});
+$("pages").addEventListener("input", () => {
+  pageCount = parseInt($("pages").value, 10) || 1;
+  localStorage.setItem("blattwerk:pages", pageCount);
   update();
 });
 </script>
