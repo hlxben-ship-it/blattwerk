@@ -269,7 +269,12 @@
   .sheet {
     position: relative;   /* anchor for the Schmuck layer */
     width: 210mm;
-    min-height: 297mm;
+    /* 297mm A4 minus a 12mm reserve at the bottom: iOS Safari's AirPrint injects its
+       own footer (site name + URL) into the physical printout with no way to disable
+       it, and since the sheet always floors to a full page, that footer had nowhere
+       to go but push the last sliver of content onto a second page. Same category as
+       the printer-clip-zone safe-inset below, just sized for the OS footer band. */
+    min-height: 285mm;
     padding: 12mm;
     background: var(--paper);
     box-shadow: 0 4px 24px rgba(38, 48, 58, .14);
