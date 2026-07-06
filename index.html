@@ -776,6 +776,50 @@ const TEMPLATES = {
     },
   },
 
+  mathe0: {
+    name: "Vorschule Mathe 0",
+    glyph: "2+3",
+    description: "20 Plus- und Minus-Aufgaben im Zahlenraum bis 10 — alle Aufgaben gleich schwer.",
+    random: true,
+    options: [
+      { key: "title", label: "Titel", type: "text", default: "Vorschule Mathe 0" },
+    ],
+    render(o, ctx) {
+      const rng = ctx.rng;
+      // Aufgaben pools — fully inside 0–10 (a, b, c all ≤ 10), single difficulty tier;
+      // operands ≥ 1, minus never negative (Ergebnis 0 allowed)
+      const plusPool = [], minusPool = [];
+      for (let a = 1; a <= 9; a++)
+        for (let b = 1; a + b <= 10; b++) plusPool.push([a, "+", b]);
+      for (let a = 1; a <= 10; a++)
+        for (let b = 1; b <= a; b++) minusPool.push([a, "−", b]);
+
+      // seeded partial Fisher–Yates: draw n distinct Aufgaben from a pool
+      const draw = (pool, n) => {
+        for (let i = 0; i < n; i++) {
+          const j = i + Math.floor(rng() * (pool.length - i));
+          [pool[i], pool[j]] = [pool[j], pool[i]];
+        }
+        return pool.slice(0, n);
+      };
+
+      // fixed 10 plus / 10 minus
+      const tasks = [...draw(plusPool, 10), ...draw(minusPool, 10)];
+      draw(tasks, tasks.length); // shuffle positions
+
+      const grid = el("div", "aufgaben");
+      for (const [a, op, b] of tasks) {
+        const item = el("div", "aufgabe");
+        item.appendChild(Object.assign(el("span"), { textContent: `${a} ${op} ${b} =` }));
+        const box = el("div", "cell");
+        box.style.width = box.style.height = "15mm";
+        item.appendChild(box);
+        grid.appendChild(item);
+      }
+      return grid;
+    },
+  },
+
   mathe1: {
     name: "Vorschule Mathe I",
     glyph: "8+9",
@@ -829,57 +873,13 @@ const TEMPLATES = {
       return grid;
     },
   },
-
-  mathe0: {
-    name: "Vorschule Mathe 0",
-    glyph: "2+3",
-    description: "20 Plus- und Minus-Aufgaben im Zahlenraum bis 10 — alle Aufgaben gleich schwer.",
-    random: true,
-    options: [
-      { key: "title", label: "Titel", type: "text", default: "Vorschule Mathe 0" },
-    ],
-    render(o, ctx) {
-      const rng = ctx.rng;
-      // Aufgaben pools — fully inside 0–10 (a, b, c all ≤ 10), single difficulty tier;
-      // operands ≥ 1, minus never negative (Ergebnis 0 allowed)
-      const plusPool = [], minusPool = [];
-      for (let a = 1; a <= 9; a++)
-        for (let b = 1; a + b <= 10; b++) plusPool.push([a, "+", b]);
-      for (let a = 1; a <= 10; a++)
-        for (let b = 1; b <= a; b++) minusPool.push([a, "−", b]);
-
-      // seeded partial Fisher–Yates: draw n distinct Aufgaben from a pool
-      const draw = (pool, n) => {
-        for (let i = 0; i < n; i++) {
-          const j = i + Math.floor(rng() * (pool.length - i));
-          [pool[i], pool[j]] = [pool[j], pool[i]];
-        }
-        return pool.slice(0, n);
-      };
-
-      // fixed 10 plus / 10 minus
-      const tasks = [...draw(plusPool, 10), ...draw(minusPool, 10)];
-      draw(tasks, tasks.length); // shuffle positions
-
-      const grid = el("div", "aufgaben");
-      for (const [a, op, b] of tasks) {
-        const item = el("div", "aufgabe");
-        item.appendChild(Object.assign(el("span"), { textContent: `${a} ${op} ${b} =` }));
-        const box = el("div", "cell");
-        box.style.width = box.style.height = "15mm";
-        item.appendChild(box);
-        grid.appendChild(item);
-      }
-      return grid;
-    },
-  },
 };
 
 /* ============ shell ============ */
 const $ = (id) => document.getElementById(id);
 function el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
-let activeTpl = localStorage.getItem("blattwerk:tpl") || "zahlen";
+let activeTpl = localStorage.getItem("blattwerk:tpl") || "mathe0";
 if (!TEMPLATES[activeTpl]) activeTpl = "zahlen";
 
 /* Schmuck state — the roll survives reloads; option edits keep it */
