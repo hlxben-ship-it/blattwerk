@@ -127,6 +127,16 @@
     outline-offset: 1px;
   }
 
+  /* optional note under a field — only shown when the template has something to say */
+  .field-hint {
+    display: none;
+    margin-top: 5px;
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--ink-soft);
+  }
+  .field-hint.show { display: block; }
+
   .field-row { display: flex; gap: 10px; }
   .field-row .field { flex: 1; }
 
@@ -268,21 +278,49 @@
 
   .sheet {
     position: relative;   /* anchor for the Schmuck layer */
-    width: 210mm;
-    /* 297mm A4 minus a 12mm reserve at the bottom: iOS Safari's AirPrint injects its
-       own footer (site name + URL) into the physical printout with no way to disable
-       it, and since the sheet always floors to a full page, that footer had nowhere
-       to go but push the last sliver of content onto a second page. Same category as
-       the printer-clip-zone safe-inset below, just sized for the OS footer band. */
-    min-height: 285mm;
-    padding: 12mm;
+    /* geometry is per Vorlage: the shell writes --sheet-* from tpl.page, A4 is the
+       default. Everything downstream (Schmuck, overflow guard, preview) reads the
+       live box, so a Vorlage on another paper size needs no further change. */
+    --sheet-w: 210mm;
+    --sheet-h: 285mm;
+    --sheet-pad: 12mm;
+    width: var(--sheet-w);
+    /* the physical page height minus a 12mm reserve at the bottom: iOS Safari's
+       AirPrint injects its own footer (site name + URL) into the printout with no way
+       to disable it, and since the sheet always floors to a full page, that footer had
+       nowhere to go but push the last sliver of content onto a second page. Same
+       category as the printer-clip-zone safe-inset below, just sized for the OS band. */
+    min-height: var(--sheet-h);
+    padding: var(--sheet-pad);
     background: var(--paper);
     box-shadow: 0 4px 24px rgba(38, 48, 58, .14);
     border-radius: 2px;
   }
+  /* Zwei-auf-eins: one physical A4 landscape carrier holding two A5 cards side by side,
+     with a dashed cut line down the middle. The carrier is the print unit, the card stays
+     the unit everything else (Schmuck, overflow guard, ctx) reasons about. */
+  .carrier {
+    position: relative;
+    display: flex;
+    align-items: flex-start;   /* cards keep their own height — stretch would break the guard */
+    background: var(--paper);
+    box-shadow: 0 4px 24px rgba(38, 48, 58, .14);
+    border-radius: 2px;
+  }
+  .carrier .sheet { box-shadow: none; border-radius: 0; }
+  .cut-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    border-left: 0.3mm dashed rgba(38, 48, 58, .38);
+    pointer-events: none;
+  }
+
   /* stacked multi-page preview — screen only, print paginates via break-after instead */
   @media screen {
-    .sheet + .sheet { margin-top: 10mm; }
+    .sheet-scaler > .sheet + .sheet,
+    .carrier + .carrier { margin-top: 10mm; }
   }
 
   /* Schmuck — decoration layer, always behind and out of the content flow */
@@ -295,9 +333,9 @@
   }
   .deko-footer {
     position: absolute;
-    left: 12mm;
+    left: var(--sheet-pad);
     bottom: 7mm;
-    width: 186mm;
+    width: calc(var(--sheet-w) - 2 * var(--sheet-pad));
   }
   .deko-title-motif { flex: 0 0 auto; }
 
@@ -369,7 +407,20 @@
   }
   .aufgabe .cell { border-radius: 1.5mm; }
 
+  /* Lesen — nackte Sätze, nichts drumherum; Abstände in em, damit die Zeilen
+     mit der Schriftgröße mitwachsen */
+  .satz-list {
+    display: flex;
+    flex-direction: column;
+    gap: .7em;
+    padding-left: 8mm;          /* nicht am Rand kleben */
+    font-family: "Comic Neue", "Comic Sans MS", "Segoe Print", cursive;
+    line-height: 1.35;
+  }
+
   /* ============ print ============ */
+  /* the paper size follows the active Vorlage — the shell rewrites #page-rule below.
+     This stays as the A4 fallback for the moment before the first render. */
   @page { size: A4 portrait; margin: 0; }
 
   @media print {
@@ -378,8 +429,11 @@
     .sidebar { display: none; }
     .sheet-scaler { transform: none !important; height: auto !important; }
     .sheet { box-shadow: none; border-radius: 0; margin: 0; }
-    /* each sheet is its own physical page; no break after the last one */
-    .sheet:not(:last-child) { break-after: page; page-break-after: always; }
+    /* each top-level unit is its own physical page; no break after the last one.
+       Scoped to direct children so the two cards inside a carrier do NOT break apart. */
+    .sheet-scaler > .sheet:not(:last-child),
+    .carrier:not(:last-child) { break-after: page; page-break-after: always; }
+    .carrier { box-shadow: none; border-radius: 0; margin: 0; }
   }
 
   /* ============ micro-moments (screen only, motion-safe) ============ */
@@ -426,6 +480,7 @@
     .deko-check input { width: 20px; height: 20px; }
   }
 </style>
+<style id="page-rule"></style>
 </head>
 <body>
 
@@ -462,6 +517,7 @@
     <div class="field">
       <label for="pages">Anzahl Blätter</label>
       <input type="number" id="pages" min="1" max="20">
+      <div class="field-hint" id="pages-hint"></div>
     </div>
 
     <button class="btn-print" id="print">Drucken</button>
@@ -478,9 +534,24 @@
 <script>
 "use strict";
 
-/* ============ geometry (mm) ============ */
+/* ============ geometry (mm) ============
+   A4 is the default; a Vorlage may declare its own `page: { w, h, pad }`. PRINT_RESERVE
+   is the band iOS AirPrint stamps its own footer into — it applies per PHYSICAL page, so
+   it is subtracted from whatever paper size the Vorlage prints on. */
 const PAGE = { w: 210, h: 297, pad: 12 };
-const CTX  = { widthMm: PAGE.w - 2 * PAGE.pad, heightMm: PAGE.h - 2 * PAGE.pad };
+const PRINT_RESERVE = 12;
+function pageOf(tpl) { return tpl.page || PAGE; }
+/* `twoUp` = two cards side by side on one physical page. The carrier is exactly two
+   cards wide, so the cards tile it without a gap and the cut line is their shared edge. */
+function cardsPerPage(tpl) { return tpl.twoUp ? 2 : 1; }
+function paperOf(tpl) {
+  const p = pageOf(tpl);
+  return { w: p.w * cardsPerPage(tpl), h: p.h };
+}
+function ctxOf(tpl) {
+  const p = pageOf(tpl);
+  return { widthMm: p.w - 2 * p.pad, heightMm: p.h - PRINT_RESERVE - 2 * p.pad };
+}
 
 /* ============ Schmuck (decoration layer) ============
    Shell-owned, template-agnostic. A seeded roll picks one of four
@@ -649,11 +720,13 @@ function streu(rng, W, H) {
 }
 const PATTERNS = [wiese, girlande, ecke, streu];
 
-function renderDeko(sheet, rng) {
+function renderDeko(sheet, rng, page) {
   if (!dekoOn) return;
   const rect = sheet.getBoundingClientRect();
-  const pxPerMm = rect.width / PAGE.w;
+  const pxPerMm = rect.width / page.w;
   const contentBottom = (sheet.lastElementChild.getBoundingClientRect().bottom - rect.top) / pxPerMm;
+  const sheetMm = page.h - PRINT_RESERVE;        // the floored height, whatever the paper
+  const footW = page.w - 2 * page.pad;
 
   // fixed draw order: the roll stays stable while the footer adapts to content
   const pattern = pick(rng, PATTERNS);
@@ -663,14 +736,14 @@ function renderDeko(sheet, rng) {
 
   // the footer yields: full (22 mm) → compact (15 mm) → none
   let h = 0;
-  if (contentBottom <= 264) h = 22;
-  else if (contentBottom <= 271) h = 15;
+  if (contentBottom <= sheetMm - 21) h = 22;
+  else if (contentBottom <= sheetMm - 14) h = 15;
 
   const layer = el("div", "deko");
   if (h) {
     layer.innerHTML =
-      `<svg class="deko-footer" style="height:${h}mm" viewBox="0 0 186 ${h}" xmlns="http://www.w3.org/2000/svg">` +
-      pattern(rng, 186, h) + `</svg>`;
+      `<svg class="deko-footer" style="height:${h}mm" viewBox="0 0 ${footW} ${h}" xmlns="http://www.w3.org/2000/svg">` +
+      pattern(rng, footW, h) + `</svg>`;
   }
   sheet.appendChild(layer);
 
@@ -693,6 +766,1194 @@ function renderDeko(sheet, rng) {
    same seed → same sheet, 🎲 re-rolls Aufgaben and Schmuck together.
    The shell owns the header (Name / Datum / Titel) and printing.
    Adding a worksheet type = adding one entry here.               */
+/* ============ lesen — Fibel-Lehrgang · Graphem-Tokenizer · Satzkorpus ============
+   LESEN-START — pure data + pure functions, no DOM. The headless corpus lint reads
+   this region straight out of index.html, so app and lint share one source of truth.
+
+   Lehrgang: „Meine Fibel", Cornelsen 2022, Klasse 1, Buchstabenkurs.
+   S. 64 is recorded as "Ö ö": the printed table lists "Ü ü" twice (64 + 66) and never
+   introduces Ö at all — assumption D5 in seed_2026_09_18_lesen_fibel.               */
+const FIBEL = [
+  { page:   4, focus: "M m" },
+  { page:   6, focus: "I i" },
+  { page:   8, focus: "A a" },
+  { page:  10, focus: "ist" },
+  { page:  12, focus: "P p" },
+  { page:  14, focus: "O o" },
+  { page:  16, focus: "ruft" },
+  { page:  18, focus: "N n" },
+  { page:  20, focus: "und" },
+  { page:  22, focus: "sind" },
+  { page:  24, focus: "Das kann ich schon!", type: "review" },
+  { page:  26, focus: "T t" },
+  { page:  28, focus: "L l" },
+  { page:  30, focus: "U u" },
+  { page:  32, focus: "E e" },
+  { page:  34, focus: "S s" },
+  { page:  36, focus: "R r" },
+  { page:  37, focus: "R r" },
+  { page:  38, focus: "Ei ei" },
+  { page:  40, focus: "H h" },
+  { page:  42, focus: "D d" },
+  { page:  43, focus: "D d" },
+  { page:  44, focus: "W w" },
+  { page:  46, focus: "Das kann ich schon!", type: "review" },
+  { page:  48, focus: "ie" },
+  { page:  50, focus: "F f" },
+  { page:  51, focus: "F f" },
+  { page:  52, focus: "Au au" },
+  { page:  53, focus: "Au au" },
+  { page:  54, focus: "B b" },
+  { page:  55, focus: "B b" },
+  { page:  56, focus: "K k" },
+  { page:  57, focus: "K k" },
+  { page:  58, focus: "Ch ch" },
+  { page:  59, focus: "ch" },
+  { page:  60, focus: "Sch sch" },
+  { page:  62, focus: "Das kann ich schon!", type: "review" },
+  { page:  64, focus: "Ö ö" },
+  { page:  66, focus: "Ü ü" },
+  { page:  67 },
+  { page:  68, focus: "G g" },
+  { page:  70, focus: "ß" },
+  { page:  71 },
+  { page:  72, focus: "V v" },
+  { page:  74, focus: "Eu eu" },
+  { page:  75 },
+  { page:  76, focus: "Z z" },
+  { page:  77 },
+  { page:  78, focus: "Das kann ich schon!", type: "review" },
+  { page:  80, focus: "J j" },
+  { page:  81, focus: "J j" },
+  { page:  82, focus: "tz" },
+  { page:  83 },
+  { page:  84, focus: "Ä ä" },
+  { page:  85 },
+  { page:  86, focus: "ng" },
+  { page:  88, focus: "ck" },
+  { page:  90, focus: "Äu äu" },
+  { page:  92, focus: "St st" },
+  { page:  93 },
+  { page:  94, focus: "Das kann ich schon!", type: "review" },
+  { page:  96, focus: "Sp sp" },
+  { page:  98, focus: "nk" },
+  { page:  99 },
+  { page: 100, focus: "Pf pf" },
+  { page: 101 },
+  { page: 102, focus: "Qu qu" },
+  { page: 103 },
+  { page: 104, focus: "X x" },
+  { page: 105 },
+  { page: 106, focus: "C c" },
+  { page: 107 },
+  { page: 108, focus: "chs" },
+  { page: 110, focus: "Y y" },
+  { page: 111 },
+  { page: 112, focus: "Das kann ich schon!", type: "review" },
+];
+
+/* Sichtwörter: introduced as whole words long before their letters ("ist" on S. 10,
+   but S only on 34) — matched before any grapheme, else the early pages are unusable. */
+const SIGHTWORDS = new Set(["ist", "ruft", "und", "sind"]);
+
+const GRAPHEME_PAGE = {};   // "sch" → 60
+const SIGHTWORD_PAGE = {};  // "ist" → 10
+const PAGE_CHOICES = [];    // { value, label } — feeds the Fibel-Seite select
+
+(function readFibel() {
+  let prev = null;
+  for (const p of FIBEL) {
+    if (!p.focus) continue;                    // Lesetext-only page: unlocks nothing
+    if (p.type !== "review") {
+      const key = p.focus.split(" ")[0].toLowerCase();  // "Sch sch" → "sch", "Ei ei" → "ei"
+      if (key === prev) continue;              // same grapheme across two pages (R r on 36 + 37)
+      prev = key;
+      if (SIGHTWORDS.has(key)) SIGHTWORD_PAGE[key] = p.page;
+      else if (GRAPHEME_PAGE[key] === undefined) GRAPHEME_PAGE[key] = p.page;
+    }
+    PAGE_CHOICES.push({ value: String(p.page), label: "S. " + p.page + " — " + p.focus });
+  }
+})();
+
+/* Longest match runs over the COMPLETE inventory and the page is checked afterwards.
+   Tokenizing against the unlocked subset instead would let "sie" through as s+i+e long
+   before "ie" (S. 48) is introduced — the child would be taught the wrong sound. */
+const GRAPHEMES = Object.keys(GRAPHEME_PAGE).sort((a, b) => b.length - a.length);
+const ONSET_ONLY = new Set(["st", "sp"]);   // the /ʃt/, /ʃp/ units — "ist", "Fenster" are s+t
+const LESEN_ALPHABET = /^[a-zäöüß .,!?]+$/;  // D11: no page gates punctuation
+
+function wordPage(word) {
+  if (SIGHTWORD_PAGE[word] !== undefined) return SIGHTWORD_PAGE[word];
+  let page = 0;
+  for (let i = 0; i < word.length; ) {
+    const g = GRAPHEMES.find((c) => (i === 0 || !ONSET_ONLY.has(c)) && word.startsWith(c, i));
+    if (!g) return null;
+    page = Math.max(page, GRAPHEME_PAGE[g]);
+    i += g.length;
+  }
+  return page;
+}
+
+/* → earliest Fibel page the sentence is readable at, or null if it can never be read */
+function minPage(sentence) {
+  const s = sentence.toLowerCase();
+  if (!LESEN_ALPHABET.test(s)) return null;   // stray character — the lint reports it
+  let page = 0;
+  for (const w of s.split(/[^a-zäöüß]+/)) {
+    if (!w) continue;
+    const p = wordPage(w);
+    if (p === null) return null;
+    page = Math.max(page, p);
+  }
+  return page;
+}
+
+/* Schriftgröße follows the Lehrgang: calm and large at the first letters, smaller once the
+   child reads fluently. Linear between the anchors, flat outside them.
+   The start is 18.75 pt — exactly what S. 48 already rendered. Since the curve has to fall
+   monotonically, that makes everything up to S. 48 necessarily flat; from there it runs on
+   unchanged. (Before: 26 pt at S. 12, which read as too heavy on the card.) */
+const SIZE_ANCHORS = [[48, 18.75], [62, 17], [78, 15.5], [94, 14], [112, 13]];
+const LESEN_ROWS = 10;       // Zeilen pro Karte — Groessenkappung und render() teilen sie
+const ROW_EM = 1.35 + 0.7;   // .satz-list line-height + gap, both in em
+const TITEL_MM = 24;         // room the shell's Titel block takes above the sentences
+const PT_PER_MM = 72 / 25.4;
+const LIST_INDENT_MM = 8;    // .satz-list padding-left
+const AVG_CHAR_EM = 0.47;    // mean advance width of Comic Neue, measured (see lint)
+
+/* The size the Lehrgang wants, clamped to what the paper can hold. */
+function lesenPt(page, size, ctx) {
+  const cap = ((ctx.heightMm - TITEL_MM) / (LESEN_ROWS * ROW_EM)) * PT_PER_MM;
+  const want = size === "auto" ? autoSizePt(page) : { gross: 24, mittel: 18, klein: 14 }[size];
+  return Math.min(want, cap);
+}
+
+/* Every row must stay ONE line: a wrapped sentence turns 10 rows into 11 and pushes the
+   card over. So the pool is additionally capped by how many characters fit at this size —
+   which is also why the sentences grow with the Lehrgang all by themselves: later pages
+   print smaller, and smaller type has room for more words. */
+function lesenMaxChars(pt, ctx) {
+  return Math.floor((ctx.widthMm - LIST_INDENT_MM) / ((pt / PT_PER_MM) * AVG_CHAR_EM));
+}
+function lesenFitting(page, pt, ctx) {
+  const pool = lesenPool(page);
+  const fits = pool.filter((s) => s.text.length <= lesenMaxChars(pt, ctx));
+  return fits.length ? fits : pool;   // never hand back nothing
+}
+function autoSizePt(page) {
+  if (page <= SIZE_ANCHORS[0][0]) return SIZE_ANCHORS[0][1];
+  for (let i = 1; i < SIZE_ANCHORS.length; i++) {
+    const [p0, s0] = SIZE_ANCHORS[i - 1], [p1, s1] = SIZE_ANCHORS[i];
+    if (page <= p1) return s0 + (s1 - s0) * (page - p0) / (p1 - p0);
+  }
+  return SIZE_ANCHORS[SIZE_ANCHORS.length - 1][1];
+}
+
+/* The corpus is untiered on purpose: every sentence's earliest page is DERIVED by
+   minPage(), never written down here, so editing a sentence can't desync its tier.
+   Grouped by the page it unlocks at only to keep the gaps visible while editing. */
+const LESEN_CORPUS = [
+  // S. 10–22 — m i a p o n + ist/ruft/und/sind. Deliberately tiny; the Lehrgang is.
+  "Mimi ist Mama.",
+  "Mia ist Mama.",
+  "Pia ist Mama.",
+  "Oma ist Mama.",
+  "Opa ist Papa.",
+  "Mo ist Papa.",
+  "Mama ruft Mia.",
+  "Papa ruft Mo.",
+  "Oma ruft Opa.",
+  "Mia ruft Mama.",
+  "Opa ruft Pia.",
+  "Mimi ruft Papa.",
+  "Nina ruft Mama.",
+  "Papa ruft Nina.",
+  "Oma ruft Anna.",
+  "Anna ist Oma.",
+  "Nino ist am Piano.",
+  "Nina ist am Piano.",
+  "Mia und Nina, Papa ruft!",
+  "Oma und Opa, Mama ruft!",
+  "Anna und Nino, Oma ruft!",
+  "Mama und Papa sind am Piano.",
+  "Mia und Anna sind am Piano.",
+  "Papa und Mo sind am Piano.",
+
+  // S. 26–32 — t l u e
+  "Tim ist am Piano.",
+  "Tina ruft Tim.",
+  "Toni und Tim sind am Piano.",
+  "Oma ruft Toni.",
+  "Tina ist Mama.",
+  "Papa ruft Tina und Toni.",
+  "Tom ist am Piano.",
+  "Lina malt.",
+  "Tim malt Mama.",
+  "Lola ist im Pool.",
+  "Lilli malt Oma.",
+  "Opa ist im Pool.",
+  "Lina und Lino sind im Pool.",
+  "Toll, Papa malt!",
+  "Luna malt.",
+  "Tim ruft Luna.",
+  "Luna ist im Pool.",
+  "Ulla malt Oma.",
+  "Lena malt Oma.",
+  "Leon und Lena malen.",
+  "Lena malt Tomaten.",
+  "Emil malt Luna.",
+  "Opa nimmt Tee.",
+  "Leon ist im Pool.",
+  "Nele malt Lena.",
+  "Emma malt Enten.",
+  "Tim und Toni malen.",
+  "Lena ist im Pool.",
+
+  // S. 34–37 — s r
+  "Lisa isst Salat.",
+  "Sam ist im Pool.",
+  "Lisa und Susi malen.",
+  "Emil isst Tomaten.",
+  "Opa isst Salat.",
+  "Sina malt Esel.",
+  "Susi malt Melonen.",
+  "Lars rennt.",
+  "Tim rennt, Lars rennt.",
+  "Rosa ist rot.",
+  "Tomaten sind rot.",
+  "Peter ruft Mira.",
+  "Lars malt Tore.",
+  "Emil ist im Tor.",
+  "Toni ist super.",
+  "Lisa malt Rosen.",
+  "Mira malt Rosen.",
+
+  // S. 38 — ei
+  "Mein Eis ist alle.",
+  "Lena isst ein Eis.",
+  "Tim malt eine Meise.",
+  "Mira malt ein Seil.",
+  "Tina und Leon essen Eis.",
+  "Lisa ist leise.",
+  "Papa isst ein Eis.",
+  "Ein Esel, eine Meise.",
+
+  // S. 40–44 — h d w
+  "Hanna hat ein Huhn.",
+  "Hanna malt einen Hasen.",
+  "Oma hat eine Hose.",
+  "Tim hat einen Hut.",
+  "Lisa hat einen Hamster.",
+  "Hanna holt Eis.",
+  "Der Hund rennt.",
+  "Das ist mein Hund.",
+  "Tim hat einen Hund.",
+  "Der Dino ist rot.",
+  "Anna malt drei Dosen.",
+  "Der Hut ist rot.",
+  "Das Eis ist alle.",
+  "Oma hat drei Hunde.",
+  "Wir malen einen Wal.",
+  "Wo ist mein Hut?",
+  "Was malt Lena?",
+  "Der Wind weht.",
+  "Wir sind im Wald.",
+  "Das Wasser ist warm.",
+  "Wo ist der Hund?",
+  "Wir sind am Wasser.",
+
+  // S. 48 — ie
+  "Die Oma liest.",
+  "Hier ist mein Eis.",
+  "Wie ist das Wetter?",
+  "Das Tier ist wild.",
+  "Sie malt eine Wiese.",
+  "Der Hund liest nie.",
+  "Lisa liest, Tim malt.",
+  "Wir sind hier.",
+  "Die Wiese ist weit.",
+
+  // S. 50–53 — f au
+  "Wir fahren weit.",
+  "Die Feder ist fein.",
+  "Das Fenster ist offen.",
+  "Der Hof ist leer.",
+  "Lena findet das Foto.",
+  "Das Auto ist rot.",
+  "Die Maus rennt.",
+  "Wir sind im Haus.",
+  "Die Frau ruft laut.",
+  "Paul ist im Haus.",
+  "Tim ist auf dem Hof.",
+  "Die Pause ist aus.",
+  "Wir laufen auf die Wiese.",
+
+  // S. 54–57 — b k
+  "Der Ball ist rot.",
+  "Die Biene ist auf der Birne.",
+  "Der Baum ist alt.",
+  "Tim hat ein Bild.",
+  "Das Boot ist auf dem See.",
+  "Wir baden im See.",
+  "Bist du da?",
+  "Das Buch ist alt.",
+  "Das Kind ist klein.",
+  "Die Kuh ist auf der Wiese.",
+  "Oma kommt.",
+  "Es ist kalt.",
+  "Der Korb ist leer.",
+  "Tim kann malen.",
+  "Lena isst einen Keks.",
+  "Kein Eis, kein Keks!",
+  "Wir kommen bald.",
+
+  // S. 58–60 — ch sch
+  "Ich bin Tim.",
+  "Ich mache das nicht.",
+  "Wir lachen laut.",
+  "Ich lese ein Buch.",
+  "Die Milch ist kalt.",
+  "Ich habe auch ein Buch.",
+  "Noch ein Keks?",
+  "Das Licht ist an.",
+  "Ich koche Milch.",
+  "Der Bach ist kalt.",
+  "Der Fisch ist schnell.",
+  "Das Schaf ist auf der Wiese.",
+  "Der Tisch ist alt.",
+  "Ich wasche mich.",
+  "Mein Schuh ist nass.",
+  "Tim ist schon in der Schule.",
+  "Wir malen ein Schiff.",
+  "Die Schule ist aus.",
+
+  // S. 64–66 — ö ü
+  "Das Bild ist schön.",
+  "Der Löwe ist im Wald.",
+  "Ich höre die Kuh.",
+  "Oma isst eine Möhre.",
+  "Wir können das!",
+  "Ich mache Brötchen.",
+  "Das Öl ist alle.",
+  "Ich bin müde.",
+  "Die Tür ist auf.",
+  "Wir haben fünf Bücher.",
+  "Das ist für dich.",
+  "Die Küche ist warm.",
+  "Fünf Kinder malen.",
+  "Mein Müsli ist alle.",
+
+  // S. 68–70 — g ß
+  "Der Tag ist schön.",
+  "Wir gehen in den Garten.",
+  "Ich mag Kekse.",
+  "Das ist gut.",
+  "Der Igel ist im Garten.",
+  "Lena sagt nichts.",
+  "Die Blume ist gelb.",
+  "Der Wagen ist rot.",
+  "Wir liegen auf der Wiese.",
+  "Der Baum ist groß.",
+  "Das Eis ist süß.",
+  "Mein Fuß ist kalt.",
+  "Ich weiß das nicht.",
+  "Der Hund heißt Bello.",
+  "Ein Gruß an Oma.",
+
+  // S. 72–77 — v eu z
+  "Der Vogel ist grün.",
+  "Wir haben vier Bücher.",
+  "Die Vase ist auf dem Tisch.",
+  "Vor dem Haus ist ein Baum.",
+  "Ich habe vier Kekse.",
+  "Heute ist ein guter Tag.",
+  "Mein Freund heißt Leon.",
+  "Die Eule ist wach.",
+  "Das Feuer ist warm.",
+  "Wir freuen uns.",
+  "Mein Buch ist neu.",
+  "Der Zug ist schnell.",
+  "Ich habe zwei Bücher.",
+  "Wir gehen ins Zimmer.",
+  "Es ist Zeit für Eis.",
+  "Das Salz ist alle.",
+  "Wir tanzen gern.",
+  "Mein Zahn ist weg.",
+
+  // S. 80–84 — j tz ä
+  "Ja, das ist gut.",
+  "Jeder malt ein Bild.",
+  "Das Jahr ist schön.",
+  "Jonas ist im Garten.",
+  "Jetzt gehen wir.",
+  "Die Katze sitzt auf dem Tisch.",
+  "Meine Mütze ist grün.",
+  "Der Platz ist leer.",
+  "Wir putzen das Boot.",
+  "Der Blitz ist hell.",
+  "Der Bär ist groß.",
+  "Ich esse gern Käse.",
+  "Wir putzen die Zähne.",
+  "Das Mädchen malt ein Bild.",
+  "Der Käfer ist im Gras.",
+  "Der Kuchen ist fertig.",
+
+  // S. 86–90 — ng ck äu
+  "Der Vogel singt.",
+  "Die Schlange ist lang.",
+  "Mein Finger tut weh.",
+  "Wir singen ein Lied.",
+  "Oma bringt Kuchen.",
+  "Die Zunge ist rot.",
+  "Der Baum ist dick.",
+  "Meine Jacke ist neu.",
+  "Wir backen Brötchen.",
+  "Die Brücke ist lang.",
+  "Ich habe Glück.",
+  "Oma packt den Korb.",
+  "In der Ecke sitzt die Katze.",
+  "Die Bäume sind grün.",
+  "Die Maus läuft schnell.",
+  "Zwei Mäuse sind im Haus.",
+  "Die Häuser sind bunt.",
+  "Der Räuber rennt weg.",
+  "Ich träume von Eis.",
+
+  // S. 92–98 — st sp nk
+  "Der Stern ist hell.",
+  "Der Stuhl ist kaputt.",
+  "Wir gehen in die Stadt.",
+  "Sei bitte still!",
+  "Der Stein ist schwer.",
+  "Ich möchte ein Stück Kuchen.",
+  "Wir spielen im Garten.",
+  "Das macht Spaß.",
+  "Es ist schon spät.",
+  "Der Spatz sitzt im Baum.",
+  "Ich mag Sport.",
+  "Der Spiegel ist groß.",
+  "Ich trinke Milch.",
+  "Die Bank ist nass.",
+  "Danke, Oma!",
+  "Hannes ist krank.",
+  "Der Schrank ist voll.",
+  "Es ist dunkel.",
+  "Mein Onkel kommt heute.",
+
+  // S. 100–108 — pf qu x c chs
+  "Der Apfel ist rot.",
+  "Das Pferd ist schnell.",
+  "Die Pflanze ist grün.",
+  "Der Topf ist heiß.",
+  "Mein Kopf tut weh.",
+  "Die Katze hat weiche Pfoten.",
+  "Der Frosch quakt.",
+  "Ich esse gern Quark.",
+  "Die Qualle ist im Meer.",
+  "Die Quelle ist kalt.",
+  "Die Hexe lacht.",
+  "Max fährt Taxi.",
+  "Xenia hext.",
+  "Der Text ist lang.",
+  "Die Box ist leer.",
+  "Wir lesen einen Comic.",
+  "Der Clown ist lustig.",
+  "Der Computer ist neu.",
+  "Wir gehen campen.",
+  "Der Fuchs ist schlau.",
+  "Der Dachs schläft.",
+  "Ich habe sechs Bücher.",
+  "Die Bäume wachsen schnell.",
+  "Der Ochse ist stark.",
+
+  // S. 110 — y
+  "Das Yak lebt wild.",
+  "Oma macht Yoga.",
+  "Das Baby schläft.",
+  "Mein Hobby ist Malen.",
+  "Wir feiern eine Party.",
+
+  // ---- längere Sätze. Regel: ein Satz wird länger durch Adjektive, Orts- und
+  // Zeitangaben und Objekte — NICHT durch ein zweites, unverbundenes Prädikat.
+  // „und" nur wo es hingehört: Aufzählung, gemeinsames Subjekt, zwei Prädikate
+  // desselben Subjekts. Gegenbeispiel, das hier bewusst nicht mehr vorkommt:
+  // „Wir laufen auf die Wiese und fahren Auto." — zwei Gedanken, zusammengeklebt.
+
+  // Aufzählungen tragen die frühen Seiten: mehr Wörter, trotzdem ein Gedanke.
+  "Mama ruft Mia, Nina und Anna.",
+  "Papa ruft Mama, Oma und Opa.",
+  "Oma, Opa und Papa sind am Piano.",
+  "Mama, Papa und Oma sind am Piano.",
+  "Tim, Toni und Tina sind am Piano.",
+  "Nina, Nino und Anna sind am Piano.",
+  "Tim, Tom und Toni malen im Pool.",
+  "Lena malt Oma, Opa und Mama.",
+  "Emil und Lena sind im Pool.",
+  "Lina und Lino malen Tomaten.",
+  "Tim ist am Piano, Lina ist im Pool.",
+  "Lisa malt Tomaten, Melonen und Salat.",
+  "Susi isst Salat, Melonen und Tomaten.",
+  "Emil isst Tomaten aus dem Salat.",
+  "Lina malt eine tolle Sonne.",
+  "Mira malt Rosen, Tomaten und Melonen.",
+  "Lars rennt, Tim malt, Lisa liest.",
+  "Rosa ist rot, Tomaten sind rot.",
+  "Tina malt am Piano eine Rose.",
+
+  // ab S. 38 gibt es Artikel, ab S. 42 Adjektive vor dem Nomen — echte Sätze
+  "Tim malt eine Meise, einen Esel und ein Seil.",
+  "Mira malt ein Seil aus Eisen.",
+  "Lena isst am Morgen ein Eis.",
+  "Hanna und Tim malen einen Hasen.",
+  "Hanna hat einen Hasen, einen Hund und ein Huhn.",
+  "Oma hat eine Hose, einen Hut und einen Mantel.",
+  "Der Hund rennt hinter dem Hasen.",
+  "Der Hund hat einen roten Hut.",
+  "Das Huhn hinter dem Haus ist alt.",
+  "Anna malt drei rote Dosen.",
+  "Der Hamster in der Dose ist munter.",
+  "Wir malen einen Wal, einen Hasen und ein Huhn.",
+  "Der Wind weht in den Wald.",
+  "Das Wasser im Wald ist warm.",
+  "Hier ist mein Eis, dort ist dein Hut.",
+  "Das Tier in der Wiese ist wild.",
+  "Die Wiese hinter dem Hof ist weit.",
+  "Die Oma liest dem Kind ein Lied.",
+  "Wie ist das Wetter hinter dem Wald?",
+  "Wir fahren weit in den Norden.",
+  "Das Fenster in der Halle ist offen.",
+  "Die feine Feder liegt auf dem Foto.",
+  "Wir fahren mit dem Auto in den Hof.",
+  "Die Maus rennt in das alte Haus.",
+  "Paul findet im Haus eine Maus.",
+  "Die Frau im Haus ruft sehr laut.",
+  "Auf der Wiese hinter dem Hof ist ein Baum.",
+  "Der Ball unter dem Baum ist rot.",
+  "Die Biene ist auf der roten Birne.",
+  "Das Boot auf dem See ist alt.",
+  "Tim badet im See hinter dem Hof.",
+  "Das kleine Kind malt ein Bild.",
+  "Die Kuh auf der Wiese ist alt.",
+  "Lena isst einen Keks aus dem Korb.",
+  "Der Korb unter dem Baum ist leer.",
+  "Das Kind in dem roten Mantel ist klein.",
+
+  // ab ch/sch trägt der Wortschatz auch Nebensinn: Ort, Zeit, Eigenschaft
+  "Ich lese mein Buch unter dem Baum.",
+  "Die kalte Milch in der Kanne ist alle.",
+  "Das Licht in der Halle ist an.",
+  "Ich mache mir eine warme Milch.",
+  "Noch ein Keks aus dem Korb, bitte!",
+  "Der Fisch im kalten Bach ist schnell.",
+  "Das Schaf auf der Wiese ist ruhig.",
+  "Mein Schuh unter dem Tisch ist nass.",
+  "In der Schule malen wir ein Schiff.",
+  "Der schnelle Fisch schwimmt im Bach.",
+  "Das Schiff in dem Hafen ist alt.",
+  "Der schöne Löwe ist im dunklen Wald.",
+  "Oma holt eine Möhre aus dem Korb.",
+  "Ich höre die Kuh hinter der Schule.",
+  "Die Brötchen in der Küche sind warm.",
+  "Die Tür in der Küche ist immer auf.",
+  "Fünf Kinder malen in der Schule.",
+  "Ich bin heute sehr müde.",
+  "Der Igel im Garten sucht nach Futter.",
+  "Wir gehen mit Oma in den Garten.",
+  "Die gelbe Blume im Garten ist schön.",
+  "Am Morgen liegt Tau auf der Wiese.",
+  "Der große Baum im Garten ist alt.",
+  "Das süße Eis in der Tüte ist alle.",
+  "Mein Hund heißt Bello und hört gut.",
+  "Der Vogel im Garten hat grüne Federn.",
+  "Die Vase mit den Blumen ist schön.",
+  "Vier Kinder sind vor dem großen Haus.",
+  "Heute ist ein guter Tag für einen Ausflug.",
+  "Meine Freunde warten vor der Schule.",
+  "Das warme Feuer vor dem Haus ist schön.",
+  "Am Freitag gehen wir mit Oma ins Kino.",
+  "Der Zug in den Zoo ist sehr schnell.",
+  "Im Zimmer hinter der Küche ist es warm.",
+  "Wir tanzen zu zweit in der Halle.",
+  "Jonas holt am Morgen zwei Brötchen.",
+  "Im Januar ist es hier sehr kalt.",
+  "Jeder holt ein Buch aus dem Regal.",
+  "Die Katze sitzt jetzt auf dem Sofa.",
+  "Meine Mütze mit dem Blitz ist neu.",
+  "Auf dem Platz vor der Schule sitzt eine Katze.",
+  "Der große Bär im Wald sucht Honig.",
+  "Das Mädchen mit der roten Mütze lacht.",
+  "Der kleine Käfer im Gras ist grün.",
+  "Wir putzen jeden Morgen die Zähne.",
+  "Die lange Schlange im Gras ist grün.",
+  "Der Vogel singt am Morgen vor dem Fenster.",
+  "Wir singen in der Schule ein langes Lied.",
+  "Oma bringt am Sonntag einen großen Kuchen.",
+  "Meine neue Jacke hat eine dicke Kapuze.",
+  "Die lange Brücke über dem Bach ist neu.",
+  "In der Ecke neben dem Bett sitzt die Katze.",
+  "Wir backen am Sonntag Brötchen für Oma.",
+  "Die Mäuse in dem alten Haus sind schnell.",
+  "Die Bäume vor dem Haus sind hoch und grün.",
+  "Der Räuber läuft schnell über die Brücke.",
+  "Ich träume von einem großen Eis.",
+  "Der helle Stern über dem Haus ist schön.",
+  "Wir gehen am Sonntag in die große Stadt.",
+  "Der schwere Stein liegt vor der Tür.",
+  "Ich möchte ein großes Stück Kuchen.",
+  "Wir spielen am Sonntag im großen Garten.",
+  "Der kleine Spatz sitzt oben im Baum.",
+  "Das Spiel mit den Bällen macht viel Spaß.",
+  "Hannes trinkt im Bett warme Milch.",
+  "Der Schrank neben dem Bett ist voll.",
+  "Mein Onkel bringt am Sonntag Kuchen mit.",
+  "Im dunklen Zimmer ist es sehr kalt.",
+  "Der rote Apfel auf dem Tisch ist süß.",
+  "Das schnelle Pferd läuft über die Wiese.",
+  "Die kleine Pflanze in dem Topf ist grün.",
+  "Die Katze putzt sich ihre weichen Pfoten.",
+  "Der Frosch im Teich quakt sehr laut.",
+  "Die Quelle hinter dem Berg ist sehr kalt.",
+  "Ich esse zum Quark gern frische Beeren.",
+  "Die Hexe mit dem roten Hut lacht laut.",
+  "Max fährt mit dem Taxi in die Stadt.",
+  "Der Text in dem Buch ist sehr lang.",
+  "Der Clown in dem Zirkus ist sehr lustig.",
+  "Wir lesen am Sonntag einen neuen Comic.",
+  "Der Computer auf dem Tisch ist ganz neu.",
+  "Der schlaue Fuchs im Wald sucht Futter.",
+  "Ich habe sechs Bücher in meinem Regal.",
+  "Die Bäume im Garten wachsen sehr schnell.",
+  "Das Yak lebt hoch oben in den Bergen.",
+  "Oma macht am Morgen im Garten Yoga.",
+  "Das kleine Baby schläft in seinem Bett.",
+  // ==== Wortschatz- und Formerweiterung (einmalig, 2026-09-18) ====
+  // Gemessenes Problem war nicht der Wortschatz allein: 39 % der Sätze enthielten
+  // „ist", 38 % begannen mit „Der/Die/Das", es gab 7 Fragen und 9 Ausrufe.
+  // Darum hier bewusst: Tätigkeitsverben statt Kopula, Fragen, Aufforderungen,
+  // und vorangestellte Orts-/Zeitangaben, die den Satzanfang von „Der" wegholen.
+
+  // S. 20-26 — nur m i a p o n t; Verben: nimmt, tippt (+ Sichtwörter)
+  "Tim tippt am Piano.",
+  "Tina tippt am Piano.",
+  "Papa nimmt Tim mit.",
+  "Oma nimmt Nina mit.",
+  "Opa nimmt Oma mit.",
+  "Toni nimmt Mimi mit.",
+  "Nimmt Papa Tim mit?",
+  "Nimmt Oma Mia mit?",
+  "Tippt Tim am Piano?",
+  "Ist Mama am Piano?",
+  "Ist Anna am Piano?",
+  "Mama, Papa ruft!",
+  "Nina, Oma ruft!",
+  "Tim, Mama ruft!",
+  "Papa und Tim tippen am Piano.",
+  "Mama und Mia tippen am Piano.",
+  "Tina und Toni tippen am Piano.",
+
+  // S. 28-32 — l u e; Artikel gibt es noch nicht, also Plural und Anrede
+  "Lina malt Tulpen.",
+  "Lino malt Tulpen.",
+  "Ulla malt Tulpen.",
+  "Malt Ulla Tulpen?",
+  "Malt Lola im Pool?",
+  "Lola tippt am Piano.",
+  "Luna nimmt Lilli mit.",
+  "Toll, Lina malt!",
+  "Toll, Luna malt Tulpen!",
+  "Lina, Papa ruft!",
+  "Lilli und Luna malen im Pool.",
+  "Lena malt Noten.",
+  "Emil malt Melonen.",
+  "Nele malt Tomaten.",
+  "Emma nimmt Lena mit.",
+  "Leon tippt am Piano.",
+  "Malen Lena und Leon?",
+  "Toll, Emma malt Enten!",
+  "Am Piano tippt Emil.",
+  "Nele und Emma malen Tulpen.",
+  "Lena malt Lampen.",
+  "Emil malt Tannen.",
+  "Nele malt Enten und Tannen.",
+
+  // S. 34-37 — s r; erste echte Tätigkeitsverben
+  "Susi malt Sonnen.",
+  "Sam nimmt Susi mit.",
+  "Lisa isst Melonen.",
+  "Isst Sam Salat?",
+  "Isst Lena Suppe?",
+  "Susi und Lisa essen Salat.",
+  "Emil isst Suppe.",
+  "Susi malt Inseln.",
+  "Sina malt Tassen.",
+  "Lars lernt am Piano.",
+  "Mira sammelt Rosen.",
+  "Peter sammelt Rosen.",
+  "Oma sortiert Tomaten.",
+  "Oma sortiert Rosen.",
+  "Luna rollt Melonen.",
+  "Mira trennt Rosen und Tulpen.",
+  "Lernt Mira am Piano?",
+  "Rennen Lars und Tim?",
+  "Rosa isst Torte.",
+  "Isst Rosa Torte?",
+  "Im Sommer rennen Lars und Mira.",
+  "Peter malt Motoren.",
+  "Toll, Lars rennt!",
+  "Lars rennt, Mira rennt mit.",
+  "Am Piano lernt Lisa.",
+
+  // S. 38-40 — ei h; ab hier Artikel
+  "Mia reitet.",
+  "Reitet Mia?",
+  "Lena teilt ein Eis.",
+  "Teilt Lena ein Eis?",
+  "Eine Ameise rennt in das Nest.",
+  "Mia reitet am See.",
+  "Tim teilt sein Eis.",
+  "Lena teilt Melonen mit Mira.",
+  "Mein Eimer ist leer.",
+  "Mia reitet, Tim malt.",
+  "Hanna hopst.",
+  "Hopst Hanna?",
+  "Oma holt Salat.",
+  "Holt Oma Salat?",
+  "Tim holt Hanna.",
+  "Hanna holt Tee.",
+  "Hat Oma einen Hut?",
+  "Am Hotel rennt ein Hase.",
+  "Ein Hase hopst in das Nest.",
+  "Hol mir ein Eis!",
+
+  // S. 42 — d: der/die/das, dort, dann, drei
+  "Rennt der Hund?",
+  "Dann landet die Ente.",
+  "Landet die Ente?",
+  "Opa rodelt.",
+  "Rodelt Opa?",
+  "Drei Damen reden.",
+  "Das Rad rollt.",
+  "Der Hamster nimmt die Melone.",
+  "Dort rennt der Hund.",
+  "Da holt Oma den Hut.",
+  "Der Held holt die Dose.",
+  "Dort malt Lena einen Dino.",
+  "Redet Oma mit Papa?",
+  "Die Ente landet neben dem Nest.",
+  "Drei Hasen rennen in den Norden.",
+
+  // S. 44 — w: endlich echte W-Fragen
+  "Wer malt den Wal?",
+  "Was holt Oma?",
+  "Warum weint Nina?",
+  "Wer wartet dort?",
+  "Wo wohnt der Wurm?",
+  "Was will der Hund?",
+  "Wir wandern in den Wald.",
+  "Wollen wir wandern?",
+  "Der Wurm wohnt in der Erde.",
+  "Im Winter weht der Wind.",
+  "Die Ente watet im Wasser.",
+  "Die Welle rollt an den Rand.",
+  "Nina weint.",
+  "Wir warten an der Wand.",
+  "Am Wasser wartet Tim.",
+  "Im Wald wandert Oma.",
+  "Tim will ein Eis.",
+  "Will Tina ein Eis?",
+  "Wir wandern, Oma wartet.",
+  "Es weht ein warmer Wind.",
+
+  // S. 48-50 — ie f
+  "Die Meise sieht den Wurm.",
+  "Sie liest hier.",
+  "Wie weit ist es?",
+  "Wer sieht das Tier?",
+  "Hier wartet ein Tier.",
+  "Sie mietet ein Rad.",
+  "Die Ente watet, das Tier wartet.",
+  "Tim filmt den Hasen.",
+  "Filmt Tim?",
+  "Oma faltet ein Hemd.",
+  "Wir finden das Foto.",
+  "Der Wind wirft die Feder.",
+  "Wo ist mein Foto?",
+  "Wie tief ist der See?",
+  "Im Hof wartet ein Fohlen.",
+  "Das Fohlen rennt in den Wald.",
+  "Wir feiern hier.",
+
+  // S. 52-54 — au b
+  "Aus dem Haus rennt die Maus.",
+  "Das Auto rollt aus dem Hof.",
+  "Auf dem Hof wartet das Auto.",
+  "Wo ist die Maus?",
+  "Die Frau filmt das Auto.",
+  "Laut ruft die Frau.",
+  "Der Hund bellt laut.",
+  "Bellt der Hund?",
+  "Die Biene brummt.",
+  "Brummt die Biene?",
+  "Der Bauer baut ein Boot.",
+  "Baut der Bauer ein Boot?",
+  "Ist das Buch blau?",
+  "Bald bellt der Hund.",
+  "Der Bruder bindet das Band.",
+  "Im Bett liest Tim ein Buch.",
+  "Wir haben Bananen.",
+  "Wer hat die Banane?",
+  "Der Ball rollt unter das Bett.",
+  "Die Beere ist bitter.",
+
+  // S. 56-58 — k ch: ich, du, und viele Tätigkeiten
+  "Das Kind klettert.",
+  "Klettert das Kind?",
+  "Die Kuh kaut Kraut.",
+  "Wer klopft?",
+  "Tim klopft an die Wand.",
+  "Der Keks kullert unter das Bett.",
+  "Oma kauft Kekse.",
+  "Kauft Oma Kekse?",
+  "Das Kind knabbert an dem Keks.",
+  "In der Kiste liegt ein Ball.",
+  "Kommt Oma bald?",
+  "Ich rieche den Kuchen.",
+  "Der Koch kocht Milch.",
+  "Der Hund kriecht unter das Bett.",
+  "Was riecht hier so?",
+  "Ich suche mein Buch.",
+  "Suchst du mein Buch?",
+  "Die Kirche hat ein hohes Dach.",
+  "Ich lache, du lachst.",
+  "Wir kochen Milch.",
+  "Wer lacht da?",
+  "Ich habe acht Kekse.",
+  "Ich wache auf.",
+  "Nach der Schule koche ich Milch.",
+
+  // S. 60 — sch
+  "Der Frosch schwimmt im Bach.",
+  "Opa schnarcht laut.",
+  "Schnarcht Opa?",
+  "Das Schaf nascht Kraut.",
+  "Wir wischen den Tisch.",
+  "Das Kind rutscht.",
+  "Wer schiebt den Tisch?",
+  "Ich schreibe ein Lied.",
+  "Der Fisch schwimmt schnell.",
+  "Das Schiff schaukelt.",
+  "Schaukelt das Schiff?",
+  "Ich schaue aus dem Fenster.",
+  "Am Tisch schreibt Tim.",
+  "Wasch dir die Hand!",
+
+  // S. 64-66 — ö ü
+  "Ich höre das Schaf.",
+  "Der Löwe schnarcht.",
+  "Wir öffnen das Fenster.",
+  "Wer hört die Kuh?",
+  "Ich möchte ein Brötchen.",
+  "Öffne das Fenster!",
+  "Wir hüten das Schaf.",
+  "Wer hütet das Schaf?",
+  "Ich rühre die Milch.",
+  "Fünf Kinder rennen über die Wiese.",
+  "Ich schütte Milch in die Tasse.",
+  "Der Hut ist für dich.",
+  "Über dem Haus sind Wolken.",
+
+  // S. 68-70 — g ss
+  "Oma gibt mir ein Brötchen.",
+  "Gibt Oma mir ein Brötchen?",
+  "Im Garten liegt ein Igel.",
+  "Am Morgen gehe ich in die Schule.",
+  "Wer legt die Gabel hin?",
+  "Ich trage die Tasche.",
+  "Am Abend lese ich ein Buch.",
+  "Ich gehe gern in den Garten.",
+  "Geht Oma mit?",
+  "Es regnet.",
+  "Regnet es?",
+  "Am Berg liegt Schnee.",
+  "Wir graben ein Loch.",
+  "Im Regen rennen wir nach Haus.",
+  "Ich esse ein großes Brötchen.",
+  "Draußen regnet es.",
+  "Das Schaf frisst süßes Gras.",
+  "Mein Fuß tut weh.",
+  "Grüß die Oma!",
+
+  // S. 72-76 — v eu z
+  "Der Vogel fliegt über das Haus.",
+  "Fliegt der Vogel?",
+  "Vier Vögel fliegen über den Hof.",
+  "Der Vater gibt mir ein Buch.",
+  "Vor dem Haus wartet Oma.",
+  "Wo ist der Vogel?",
+  "Heute gehen wir in den Garten.",
+  "Mein Freund heult.",
+  "Warum heult dein Freund?",
+  "Das Feuer brennt.",
+  "Neun Kinder rennen über die Wiese.",
+  "Heute scheint die Sonne.",
+  "Der Zug rollt in den Bahnhof.",
+  "Wir tanzen zu zweit.",
+  "Zwei Kinder tanzen im Garten.",
+  "Wer tanzt hier?",
+  "Ich zeige dir mein Buch.",
+  "Zeig mir dein Buch!",
+  "Der Zaun ist neu.",
+
+  // S. 80-84 — j tz ä
+  "Jonas holt am Morgen Brötchen.",
+  "Jeder holt ein Buch.",
+  "Ja, ich gehe mit.",
+  "Wo sitzt die Katze?",
+  "Jetzt regnet es.",
+  "Der Blitz leuchtet.",
+  "Wir putzen den Tisch.",
+  "Setz dich hin!",
+  "Die Katze kratzt.",
+  "Der Bär schläft im Wald.",
+  "Schläft der Bär?",
+  "Das Mädchen lacht.",
+  "Ich trage die Bälle.",
+  "Der Käfer krabbelt über das Gras.",
+  "Wer wäscht die Tasse?",
+  "Die Ärztin kommt gleich.",
+  "Ich zähle bis zehn.",
+
+  // S. 86-90 — ng ck äu
+  "Der Vogel singt am Morgen.",
+  "Wer singt da?",
+  "Die Schlange kriecht durch das Gras.",
+  "Der Junge klettert auf den Baum.",
+  "Bringt Oma Kuchen?",
+  "Es klingelt.",
+  "Klingelt es?",
+  "Oma backt Kuchen.",
+  "Backt Oma Kuchen?",
+  "Mein Rücken tut weh.",
+  "Ich packe die Tasche.",
+  "Der Wecker klingelt.",
+  "Weck mich um acht!",
+  "Ich drücke die Tür zu.",
+  "Wohin läuft die Maus?",
+  "Zwei Mäuse laufen über den Hof.",
+  "Der Räuber läuft weg.",
+  "Läufst du mit?",
+
+  // S. 92-98 — st sp nk
+  "Der Stern leuchtet.",
+  "Wir stehen an der Straße.",
+  "Steh bitte auf!",
+  "Der Stuhl steht am Tisch.",
+  "Wo steht der Stuhl?",
+  "In der Stadt ist viel los.",
+  "Ich stelle die Tasse hin.",
+  "Spielst du mit?",
+  "Das Spiel macht Spaß.",
+  "Ich spare mein Geld.",
+  "Der Spiegel hängt an der Wand.",
+  "Trinkst du Milch?",
+  "Ich denke an Oma.",
+  "Denk an mich!",
+  "Es wird dunkel.",
+  "Wir winken dem Zug.",
+  "Danke schön!",
+
+  // S. 100-110 — pf qu x c chs y
+  "Ich pflücke einen Apfel.",
+  "Wer pflanzt den Baum?",
+  "Das Kind hüpft über die Pfütze.",
+  "Quakt der Frosch?",
+  "Am Teich quaken die Frösche.",
+  "Wer hext hier?",
+  "In der Box liegt ein Buch.",
+  "Xenia hext gern.",
+  "Liest du den Comic?",
+  "Der Clown lacht laut.",
+  "Der Fuchs schleicht durch den Wald.",
+  "Der Dachs schläft am Tag.",
+  "Der Ochse zieht den Wagen.",
+  "Wo lebt das Yak?",
+  // ==== Nomen-Nachschlag fuer die dünnen Baender (2026-09-18) ====
+  // Gemessen: global sind die Nomen flach verteilt (häufigstes 3 %), aber pro Seite
+  // war es vorne bettelarm - S. 24 zeigte dem Kind ganze 11 verschiedene Nomen.
+  // Ab S. 32 lag die Quote schon stabil bei 0,37 Nomen/Satz, darum liegt der ganze
+  // Nachschlag im Bereich S. 28-44. Bei S. 20-26 ist nicht Fleiß die Grenze, sondern
+  // der Buchstabenvorrat: aus m i a p o n t entstehen kaum weitere Nomen.
+
+  // S. 28-30 — Lama, Lolli, Limo, Pilot, Puma
+  "Lina malt Lamas.",
+  "Lino malt Lamas.",
+  "Malt Lola Lamas?",
+  "Toll, Lilli malt Lamas!",
+  "Lilli malt Lollis.",
+  "Malt Lina Lollis?",
+  "Toni nimmt Limo mit.",
+  "Nimmt Toni Limo mit?",
+  "Papa ist Pilot.",
+  "Ist Papa Pilot?",
+  "Tim malt Piloten.",
+  "Luna malt Pumas.",
+  "Malt Luna Pumas?",
+  "Toll, Ulla malt Pumas!",
+  "Luna nimmt Limo mit.",
+
+  // S. 32 — Puppe, Lampe, Tulpe, Palme, Ampel, Nudel, Tunnel
+  "Lena malt Puppen.",
+  "Emma nimmt Puppen mit.",
+  "Malt Nele Puppen?",
+  "Lena malt Lampen und Tulpen.",
+  "Emil malt Palmen.",
+  "Toll, Emma malt Palmen!",
+  "Lena malt Ampeln.",
+  "Malt Leon Tulpen?",
+  "Emma malt Lampen.",
+  "Lena malt Puppen und Palmen.",
+  "Nele malt Nudeln.",
+  "Am Tunnel malt Emil.",
+  "Leon malt Tunnel und Ampeln.",
+
+  // S. 34-36 — Salami, Insel, Sessel, Nase, Pinsel, Messer, Monster, Roller, Traktor, Teller, Turm
+  "Susi isst Salami.",
+  "Isst Susi Salami?",
+  "Emil isst Salami.",
+  "Lisa isst Salami und Melonen.",
+  "Lisa malt Inseln und Palmen.",
+  "Sam malt Sessel.",
+  "Sina malt Nasen.",
+  "Susi nimmt Pinsel mit.",
+  "Nimmt Sam Pinsel mit?",
+  "Emil malt Nasen und Palmen.",
+  "Tim malt Monster.",
+  "Malt Tim Monster?",
+  "Lars malt Monster.",
+  "Toni malt Traktoren.",
+  "Mira malt Roller.",
+  "Peter malt Roller und Traktoren.",
+  "Mira sortiert Teller.",
+  "Lisa malt Teller.",
+  "Am Turm rennt Lars.",
+  "Peter rollt Melonen in den Turm.",
+  "Oma sortiert Messer und Teller.",
+  "Rosa nimmt Sirup mit.",
+
+  // S. 38-40 — Reis, Leiter, Ameise, Hammer
+  "Tim isst Reis.",
+  "Isst Tim Reis?",
+  "Tim teilt Reis mit Mira.",
+  "Lena malt eine Leiter.",
+  "Am Seil rennt eine Ameise.",
+  "Mira malt eine Ameise.",
+  "Oma holt einen Hammer.",
+  "Holt Oma einen Hammer?",
+  "Tim hat einen Hammer.",
+  "Hanna malt eine Leiter und ein Seil.",
+
+  // S. 42 — Nadel, Mond, Dame, Diamant
+  "Oma holt eine Nadel.",
+  "Die Dame holt den Hammer.",
+  "Die Dame malt den Mond.",
+  "Holt die Dame die Nadel?",
+  "Der Held holt einen Diamant.",
+  "Dort malt Lena den Mond.",
+  "Am Mond landet niemand.",
+  "Die Nadel rollt unter den Sessel.",
+
+  // S. 44 — Weste, Wanne, Wolle, Wurst, Watte
+  "Oma holt die Weste.",
+  "Wo ist die Weste?",
+  "In der Wanne ist Wasser.",
+  "Die Wanne ist warm.",
+  "Tim isst Wurst.",
+  "Isst Tim Wurst?",
+  "Wer holt die Wurst?",
+  "Oma hat Wolle.",
+  "Die Watte ist warm.",
+  "Wir rollen die Wolle.",
+
+  // Schulsachen - passen zum Kind und tragen die mittleren Seiten
+  "Wo ist mein Pinsel?",
+  "Tim malt mit dem Pinsel.",
+  "Das Papier ist weiß.",
+  "Oma holt Papier und Kleber.",
+  "Wer hat den Kleber?",
+  "Die Kreide liegt auf dem Tisch.",
+  "Ich male mit Kreide.",
+  "Mein Heft liegt in der Mappe.",
+  "Wo ist mein Heft?",
+  "Die Tafel ist grün.",
+  "Der Lehrer malt an die Tafel.",
+  "Ich packe Heft und Mappe ein.",
+  "Die Schere liegt in der Kiste.",
+  "Wer holt die Schere?",
+  "Der Löffel liegt neben dem Teller.",
+  "Oma legt den Löffel hin.",
+  "Der Nagel steckt in dem Brett.",
+  "Opa holt Hammer und Nagel.",
+  "Mein Ranzen ist schwer.",
+  "Ich packe den Ranzen.",
+  "Die Decke ist warm.",
+  "Das Kissen ist weich.",
+  "Auf dem Sofa liegt ein Kissen.",
+  "Der Teppich ist bunt.",
+];
+
+const LESEN_SAETZE = LESEN_CORPUS.map((text) => ({ text, page: minPage(text) }));
+function lesenPool(page) {
+  return LESEN_SAETZE.filter((s) => s.page !== null && s.page <= page);
+}
+
+/* Editorial floor, not a computed one: below S. 20 the Lehrgang only yields sentences like
+   „Mimi ist Mama." — grammatically fine, but not worth a reading card, and with two or three
+   of them per page they just repeat. S. 20 („und") is where a card first reads like a card.
+   Deliberately a constant and not a pool-size rule: adding a couple of early sentences some
+   day should NOT silently re-open S. 14. */
+const LESEN_MIN_PAGE = 20;
+for (let i = PAGE_CHOICES.length - 1; i >= 0; i--) {
+  const page = parseInt(PAGE_CHOICES[i].value, 10);
+  if (page < LESEN_MIN_PAGE || !lesenPool(page).length) PAGE_CHOICES.splice(i, 1);
+}
+
+/* Die Rampe: der Pool wird nach Länge in 10 Bänder geteilt und aus jedem Band genau ein
+   Satz gezogen. Ein reiner Zufallsgriff wäre kurz-lastig, weil der Korpus es ist — die
+   Karte bekäme neun kurze Sätze und einen Ausreißer. Geschichtet ist die Steigerung
+   strukturell garantiert statt erhofft: Bänder sind disjunkt (⇒ verschieden) und nach
+   Länge geordnet (⇒ aufsteigend), beides by construction, nicht per Zufall. */
+function drawRamp(pool, n, rng) {
+  if (pool.length < n) return drawSaetze(pool, n, rng).sort(byLength);
+  const sorted = pool.slice().sort(byLength);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const lo = Math.floor(i * sorted.length / n);
+    const hi = Math.floor((i + 1) * sorted.length / n);
+    out.push(sorted[lo + Math.floor(rng() * (hi - lo))]);
+  }
+  return out;
+}
+function byLength(a, b) {
+  return a.text.length - b.text.length || (a.text < b.text ? -1 : a.text > b.text ? 1 : 0);
+}
+
+/* 10 Sätze aus dem Pool. Partieller Fisher–Yates → distinct by construction; if the
+   pool is smaller than the sheet (the first Fibel pages), a fresh copy is appended and
+   sentences repeat — deliberate, repetition is fine for a beginning reader (D7). */
+function drawSaetze(pool, n, rng) {
+  if (!pool.length) return [];
+  const bag = pool.slice();
+  const out = [];
+  for (let i = 0; out.length < n; i++) {
+    if (i >= bag.length) bag.push(...pool);
+    const j = i + Math.floor(rng() * (bag.length - i));
+    [bag[i], bag[j]] = [bag[j], bag[i]];
+    out.push(bag[i]);
+  }
+  return out;
+}
+/* LESEN-END */
+
 const TEMPLATES = {
   zahlen: {
     name: "Zahlen schreiben",
@@ -773,6 +2034,44 @@ const TEMPLATES = {
         rows.appendChild(row);
       }
       return rows;
+    },
+  },
+
+  lesen: {
+    name: "Lesen",
+    glyph: "Aa",
+    description: "10 kurze Sätze zum Vorlesen. Zwei A5-Karten pro A4-Bogen quer, in der Mitte durchschneiden. Nur mit den Buchstaben, die bis zur gewählten Fibel-Seite dran waren. Ab S. 48 wird die Schrift mit jeder Seite kleiner.",
+    // 148.5 = exactly half of A4 landscape, so two cards tile the Bogen without a gap
+    page: { w: 148.5, h: 210, pad: 10 },
+    twoUp: true,                         // zwei Karten pro A4-Bogen quer, zum Zerschneiden
+    header: false,                       // kein Name/Datum: hier wird nichts eingetragen
+    random: true,
+    options: [
+      { key: "title", label: "Titel", type: "text", default: (o) => "Lesen — bis S. " + o.page },
+      { key: "page",  label: "Fibel-Seite", type: "select", default: "24", choices: PAGE_CHOICES,
+        hint: (o) => {
+          const c = ctxOf(TEMPLATES.lesen);
+          const n = lesenFitting(parseInt(o.page, 10), lesenPt(parseInt(o.page, 10), o.size, c), c).length;
+          return n < LESEN_ROWS ? "nur " + n + " verschiedene Sätze bis S. " + o.page + " — Sätze wiederholen sich" : null;
+        } },
+      { key: "size",  label: "Schriftgröße", type: "select", default: "auto", choices: [
+          { value: "auto",   label: "Automatisch (nach Seite)" },
+          { value: "gross",  label: "Groß" },
+          { value: "mittel", label: "Mittel" },
+          { value: "klein",  label: "Klein" },
+      ]},
+    ],
+    render(o, ctx) {
+      const page = parseInt(o.page, 10);
+      const pt = lesenPt(page, o.size, ctx);
+      const list = el("div", "satz-list");
+      list.style.fontSize = pt.toFixed(2) + "pt";
+      for (const s of drawRamp(lesenFitting(page, pt, ctx), LESEN_ROWS, ctx.rng)) {
+        const row = el("div", "satz");
+        row.textContent = s.text;
+        list.appendChild(row);
+      }
+      return list;
     },
   },
 
@@ -894,12 +2193,55 @@ function rollDeko() {
 /* Anzahl Blätter — shell-owned like Schmuck, applies to every Vorlage */
 let pageCount = parseInt(localStorage.getItem("blattwerk:pages"), 10) || 1;
 
+/* An option's `default` may be a function of the other options (e.g. the Lesen title
+   follows the Fibel-Seite). It keeps following until the user types in that field;
+   clearing the field hands control back to the automatic value. */
+let dirtyOpts = new Set();
+function loadDirty(tplId) {
+  dirtyOpts = new Set(JSON.parse(localStorage.getItem("blattwerk:dirty:" + tplId) || "[]"));
+}
+function saveDirty(tplId) {
+  localStorage.setItem("blattwerk:dirty:" + tplId, JSON.stringify([...dirtyOpts]));
+}
+
 function loadOpts(tplId) {
   const tpl = TEMPLATES[tplId];
   const saved = JSON.parse(localStorage.getItem("blattwerk:opts:" + tplId) || "{}");
   const opts = {};
-  for (const o of tpl.options) opts[o.key] = saved[o.key] !== undefined ? saved[o.key] : o.default;
+  // literals first — a computed default may read the others
+  for (const o of tpl.options) {
+    if (typeof o.default === "function") continue;
+    opts[o.key] = saved[o.key] !== undefined ? saved[o.key] : o.default;
+  }
+  for (const o of tpl.options) {
+    if (typeof o.default !== "function") continue;
+    opts[o.key] = dirtyOpts.has(o.key) && saved[o.key] !== undefined ? saved[o.key] : o.default(opts);
+  }
   return opts;
+}
+
+/* re-run the computed defaults after any option change, and mirror them into the form */
+function syncDefaults(tpl, opts) {
+  for (const o of tpl.options) {
+    if (typeof o.default !== "function" || dirtyOpts.has(o.key)) continue;
+    const v = o.default(opts);
+    if (opts[o.key] === v) continue;
+    opts[o.key] = v;
+    const input = $("opt-" + o.key);
+    if (input) input.value = v;
+  }
+}
+
+/* a hint is an optional per-option note under the field (e.g. "pool too small") */
+function updateHints(tpl, opts) {
+  for (const o of tpl.options) {
+    if (!o.hint) continue;
+    const node = $("hint-" + o.key);
+    if (!node) continue;
+    const text = o.hint(opts);
+    node.textContent = text || "";
+    node.classList.toggle("show", !!text);
+  }
 }
 function saveOpts(tplId, opts) {
   localStorage.setItem("blattwerk:tpl", tplId);
@@ -918,7 +2260,7 @@ function buildPicker() {
     input.name = "tpl";
     input.id = "tpl-" + id;
     input.checked = id === activeTpl;
-    input.addEventListener("change", () => { activeTpl = id; rollDeko(); buildOptions(); updateDice(); update(); });
+    input.addEventListener("change", () => { activeTpl = id; rollDeko(); loadDirty(id); buildOptions(); updateDice(); update(); });
 
     const card = el("label", "tpl-card");
     card.htmlFor = input.id;
@@ -967,8 +2309,23 @@ function buildOptions() {
     input.id = "opt-" + o.key;
     input.dataset.key = o.key;
     input.dataset.type = o.type;
-    input.addEventListener("input", update);
+    input.addEventListener("input", () => {
+      if (typeof o.default === "function") {
+        // typing takes the field over; emptying it gives the automatic value back
+        if (input.value.trim() === "") dirtyOpts.delete(o.key);
+        else dirtyOpts.add(o.key);
+        saveDirty(activeTpl);
+      }
+      update();
+    });
     field.appendChild(input);
+
+    if (o.hint) {
+      const hint = el("div", "field-hint");
+      hint.id = "hint-" + o.key;
+      input.setAttribute("aria-describedby", hint.id);   // Reader liest den Hinweis mit
+      field.appendChild(hint);
+    }
 
     if (o.type === "number") {
       if (!numberRow) { numberRow = el("div", "field-row"); box.appendChild(numberRow); }
@@ -991,17 +2348,24 @@ function readOpts() {
 
 function buildSheet(tpl, opts, templateRng) {
   const sheet = el("div", "sheet");
+  const p = pageOf(tpl);
+  sheet.style.setProperty("--sheet-w", p.w + "mm");
+  sheet.style.setProperty("--sheet-h", (p.h - PRINT_RESERVE) + "mm");
+  sheet.style.setProperty("--sheet-pad", p.pad + "mm");
 
-  // shell-owned header: Name (left) · Datum (right) · Titel
-  const head = el("div", "sheet-head");
-  const name = el("div", "write-line write-name");
-  name.appendChild(Object.assign(el("span"), { textContent: "Name:" }));
-  name.appendChild(el("span", "rule"));
-  const date = el("div", "write-line write-date");
-  date.appendChild(Object.assign(el("span"), { textContent: "Datum:" }));
-  date.appendChild(el("span", "rule"));
-  head.append(name, date);
-  sheet.appendChild(head);
+  // shell-owned header: Name (left) · Datum (right). A Vorlage that is read, not
+  // written on, opts out with `header: false` — nothing to sign.
+  if (tpl.header !== false) {
+    const head = el("div", "sheet-head");
+    const name = el("div", "write-line write-name");
+    name.appendChild(Object.assign(el("span"), { textContent: "Name:" }));
+    name.appendChild(el("span", "rule"));
+    const date = el("div", "write-line write-date");
+    date.appendChild(Object.assign(el("span"), { textContent: "Datum:" }));
+    date.appendChild(el("span", "rule"));
+    head.append(name, date);
+    sheet.appendChild(head);
+  }
 
   if (opts.title) {
     const title = el("div", "sheet-title");
@@ -1009,30 +2373,52 @@ function buildSheet(tpl, opts, templateRng) {
     sheet.appendChild(title);
   }
 
-  sheet.appendChild(tpl.render(opts, { ...CTX, rng: templateRng }));
+  sheet.appendChild(tpl.render(opts, { ...ctxOf(tpl), rng: templateRng }));
   return sheet;
 }
 
 function renderSheets() {
   const tpl = TEMPLATES[activeTpl];
   const opts = readOpts();
+  // @page cannot be scoped to an element, so the rule itself is rewritten per Vorlage
+  const paper = paperOf(tpl);
+  $("page-rule").textContent = `@page { size: ${paper.w}mm ${paper.h}mm; margin: 0; }`;
+  syncDefaults(tpl, opts);
+  updateHints(tpl, opts);
   saveOpts(activeTpl, opts);
 
   const scaler = $("scaler");
   scaler.innerHTML = "";
 
-  // one meta stream draws a distinct sub-seed per page, so the same dekoSeed +
-  // pageCount always reproduces the identical N-page set; XOR still keeps each
-  // page's template stream distinct from its own Schmuck stream (per-sheet rule)
+  // one meta stream draws a distinct sub-seed per CARD, so the same dekoSeed +
+  // pageCount always reproduces the identical set; XOR still keeps each card's
+  // template stream distinct from its own Schmuck stream (per-sheet rule)
   const metaRng = mulberry32(dekoSeed);
+  const perPage = cardsPerPage(tpl);
   const sheets = [];
   for (let i = 0; i < pageCount; i++) {
-    const pageSeed = Math.floor(metaRng() * 4294967296);
-    const sheet = buildSheet(tpl, opts, mulberry32(pageSeed ^ 0x9E3779B9));
-    scaler.appendChild(sheet); // attach before renderDeko — it measures live layout
-    renderDeko(sheet, mulberry32(pageSeed));
-    sheets.push(sheet);
+    // the carrier goes into the DOM first: renderDeko measures live layout, so a card
+    // must already be attached to its final parent before it can be decorated
+    let host = scaler;
+    if (perPage > 1) {
+      host = el("div", "carrier");
+      host.style.width = paper.w + "mm";
+      host.style.height = paper.h + "mm";
+      scaler.appendChild(host);
+    }
+    for (let k = 0; k < perPage; k++) {
+      const cardSeed = Math.floor(metaRng() * 4294967296);
+      const sheet = buildSheet(tpl, opts, mulberry32(cardSeed ^ 0x9E3779B9));
+      host.appendChild(sheet);
+      renderDeko(sheet, mulberry32(cardSeed), pageOf(tpl));
+      sheets.push(sheet);
+    }
+    if (perPage > 1) host.appendChild(el("div", "cut-line"));
   }
+  $("pages-hint").textContent = perPage > 1
+    ? `${pageCount} Bogen A4 quer = ${pageCount * perPage} Karten zum Auseinanderschneiden`
+    : "";
+  $("pages-hint").classList.toggle("show", perPage > 1);
 
   // screen-only guard: does every page still fit one A4 page?
   // sheets grow with their content (min-height), so compare against fixed A4 height
@@ -1045,12 +2431,12 @@ function renderSheets() {
 function fitPreview() {
   const stage = document.querySelector(".stage");
   const scaler = $("scaler");
-  const sheets = scaler.querySelectorAll(".sheet");
-  const a4px = sheets[0].offsetWidth;
-  const scale = Math.min(1, stage.clientWidth / a4px);
+  const units = scaler.children;              // .sheet, or .carrier when two-up
+  const pagePx = units[0].offsetWidth;
+  const scale = Math.min(1, stage.clientWidth / pagePx);
   scaler.style.transform = "scale(" + scale + ")";
-  const first = sheets[0].getBoundingClientRect();
-  const last = sheets[sheets.length - 1].getBoundingClientRect();
+  const first = units[0].getBoundingClientRect();
+  const last = units[units.length - 1].getBoundingClientRect();
   scaler.style.height = ((last.bottom - first.top) * scale) + "px";
 }
 
@@ -1061,6 +2447,7 @@ function update() { renderSheets(); fitPreview(); }
 function updateDice() { $("dice").disabled = !dekoOn && !TEMPLATES[activeTpl].random; }
 
 buildPicker();
+loadDirty(activeTpl);
 buildOptions();
 $("deko-on").checked = dekoOn;
 $("pages").value = pageCount;
