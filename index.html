@@ -407,6 +407,45 @@
   }
   .aufgabe .cell { border-radius: 1.5mm; }
 
+  /* Sudoku — ein Grid aus Kästchen; dick sind nur Blockgrenzen und Außenrahmen.
+     Die Zellgröße setzt die Vorlage aus dem Papier (--sdk-cell), die Ziffern
+     skalieren mit ihr mit. */
+  .sudoku-wrap { display: flex; flex-direction: column; align-items: center; }
+  .sudoku-stars {
+    font-size: 15pt;
+    letter-spacing: 1.2mm;
+    margin: -5mm 0 7mm;             /* rückt direkt unter den Titel */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .sudoku {
+    display: grid;
+    border: 0.8mm solid var(--ink);
+    border-radius: 1.5mm;
+    overflow: hidden;
+  }
+  .sdk-cell {
+    width: var(--sdk-cell);
+    height: var(--sdk-cell);
+    border-right: 0.25mm solid var(--ink);
+    border-bottom: 0.25mm solid var(--ink);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Comic Neue", "Comic Sans MS", "Segoe Print", cursive;
+    font-size: calc(var(--sdk-cell) * .6);
+    line-height: 1;
+  }
+  .sdk-block-r { border-right-width: 0.7mm; }
+  .sdk-block-b { border-bottom-width: 0.7mm; }
+  .sdk-edge-r  { border-right: none; }
+  .sdk-edge-b  { border-bottom: none; }
+  .sdk-given {
+    background: var(--given);        /* vorgegebene Zahlen getont — wie .cell-model */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
   /* Lesen — nackte Sätze, nichts drumherum; Abstände in em, damit die Zeilen
      mit der Schriftgröße mitwachsen */
   .satz-list {
@@ -1954,6 +1993,231 @@ function drawSaetze(pool, n, rng) {
 }
 /* LESEN-END */
 
+/* ============ Sudoku — seeded Generator mit Eindeutigkeits-Garantie ============
+   SUDOKU-START — reine Daten + reine Funktionen, kein DOM.
+   n = 4 (2×2-Blöcke, Ziffern 1–4) oder 9 (3×3-Blöcke, Ziffern 1–9).
+   Ein Gitter ist ein Int8Array der Länge n·n, 0 = leere Zelle.
+
+     sdkFull   — würfelt eine vollständige, gültige Lösung
+     sdkLogic  — menschen-analoger Solver; nutzt NUR die Techniken einer Stufe
+     sdkMake   — gräbt Löcher, solange sdkLogic das Rätsel noch löst
+
+   Der Kern der Garantie: sdkLogic rät nie. Ein Rätsel, das es löst, ist damit
+   zwingend eindeutig lösbar — die Stufenprüfung IST der Eindeutigkeitsbeweis.
+   sdkCount läuft am Ende trotzdem einmal als Assertion.                        */
+
+/* Stufen je Gittergröße. `tier` = erlaubte Technik (1 Naked Single, 2 + Hidden Single,
+   3 + Locked Candidates / Naked Pair), `givens` = Untergrenze vorgegebener Zahlen.
+
+   Beim 4×4 ist die Technik-Leiter nachweislich degeneriert: minimal gegraben landet ein
+   4×4 bei 4–5 Givens und braucht in 0 von 300 Fällen einen Hidden Single. Dort IST die
+   Schwierigkeit die Zahl der Lücken — deshalb beide Stufen auf tier 1, getrennt nur über
+   `givens`. „Schwer" gibt es beim 4×4 folgerichtig nicht (G2).                        */
+const SDK_LEVELS = {
+  4: { leicht: { tier: 1, givens: 8 },  mittel: { tier: 1, givens: 5 } },
+  9: { leicht: { tier: 1, givens: 36 }, mittel: { tier: 2, givens: 30 }, schwer: { tier: 3, givens: 24 } },
+};
+const SDK_STARS = { leicht: 1, mittel: 2, schwer: 3 };
+const SDK_RETRIES = 12;
+
+const sdkBits = (m) => { let c = 0; while (m) { m &= m - 1; c++; } return c; };
+const sdkFirst = (m) => 31 - Math.clz32(m & -m);     // 0-basierter Index des gesetzten Bits
+
+const sdkCache = {};
+function sdkUnits(n) {
+  if (sdkCache[n]) return sdkCache[n];
+  const b = Math.round(Math.sqrt(n));                 // 2 → 4×4, 3 → 9×9
+  const rows = [], cols = [], boxes = [];
+  for (let r = 0; r < n; r++) rows.push([...Array(n)].map((_, c) => r * n + c));
+  for (let c = 0; c < n; c++) cols.push([...Array(n)].map((_, r) => r * n + c));
+  for (let br = 0; br < n; br += b)
+    for (let bc = 0; bc < n; bc += b) {
+      const u = [];
+      for (let r = br; r < br + b; r++) for (let c = bc; c < bc + b; c++) u.push(r * n + c);
+      boxes.push(u);
+    }
+  const units = [...rows, ...cols, ...boxes];
+  const peers = Array.from({ length: n * n }, () => new Set());
+  for (const u of units) for (const i of u) for (const j of u) if (i !== j) peers[i].add(j);
+  const boxOf = new Int8Array(n * n);
+  for (let i = 0; i < n * n; i++) boxOf[i] = Math.floor(i / n / b) * b + Math.floor((i % n) / b);
+  return (sdkCache[n] = { b, rows, cols, boxes, units, boxOf, peers: peers.map((s) => [...s]) });
+}
+
+/* vollständige Lösung — Backtracking mit gewürfelter Ziffernreihenfolge */
+function sdkFull(rng, n) {
+  const { peers } = sdkUnits(n);
+  const full = (1 << n) - 1;
+  const g = new Int8Array(n * n);
+  const order = new Int8Array(n);
+  const fill = (i) => {
+    if (i === n * n) return true;
+    let used = 0;
+    for (const p of peers[i]) if (g[p]) used |= 1 << (g[p] - 1);
+    const mask = ~used & full;
+    for (let k = 0; k < n; k++) order[k] = k + 1;
+    for (let k = 0; k < n; k++) {
+      const j = k + Math.floor(rng() * (n - k));
+      const t = order[k]; order[k] = order[j]; order[j] = t;
+    }
+    for (let k = 0; k < n; k++) {
+      const d = order[k];
+      if (!(mask & (1 << (d - 1)))) continue;
+      g[i] = d;
+      if (fill(i + 1)) return true;
+    }
+    g[i] = 0;
+    return false;
+  };
+  fill(0);
+  return g;
+}
+
+/* zählt Lösungen bis `limit` (MRV-Backtracking) — nur als Schluss-Assertion */
+function sdkCount(grid, n, limit) {
+  const { peers } = sdkUnits(n);
+  const full = (1 << n) - 1;
+  const g = Int8Array.from(grid);
+  let count = 0;
+  const rec = () => {
+    let best = -1, bestMask = 0, bestCnt = n + 1;
+    for (let i = 0; i < n * n; i++) {
+      if (g[i]) continue;
+      let used = 0;
+      for (const p of peers[i]) if (g[p]) used |= 1 << (g[p] - 1);
+      const mask = ~used & full;
+      const c = sdkBits(mask);
+      if (c === 0) return;
+      if (c < bestCnt) { best = i; bestCnt = c; bestMask = mask; if (c === 1) break; }
+    }
+    if (best === -1) { count++; return; }
+    for (let d = 1; d <= n; d++) {
+      if (!(bestMask & (1 << (d - 1)))) continue;
+      g[best] = d; rec(); g[best] = 0;
+      if (count >= limit) return;
+    }
+  };
+  rec();
+  return count;
+}
+
+/* menschen-analoger Solver. tier 1 = Naked Single, 2 = + Hidden Single,
+   3 = + Locked Candidates / Naked Pair. Rät nie — false heißt "reicht nicht". */
+function sdkLogic(grid, n, tier) {
+  const { units, boxes, rows, cols, boxOf, peers } = sdkUnits(n);
+  const full = (1 << n) - 1;
+  const g = Int8Array.from(grid);
+  const cand = new Int32Array(n * n);
+  let empty = 0;
+  for (let i = 0; i < n * n; i++) {
+    if (g[i]) { cand[i] = 0; continue; }
+    empty++;
+    let used = 0;
+    for (const p of peers[i]) if (g[p]) used |= 1 << (g[p] - 1);
+    cand[i] = ~used & full;
+  }
+  const place = (i, d) => {
+    g[i] = d; cand[i] = 0; empty--;
+    const bit = 1 << (d - 1);
+    for (const p of peers[i]) cand[p] &= ~bit;
+  };
+  for (;;) {
+    for (let i = 0; i < n * n; i++) if (!g[i] && cand[i] === 0) return false;  // Widerspruch
+    if (empty === 0) return true;
+    let progress = false;
+
+    for (let i = 0; i < n * n; i++)                                   // Naked Single
+      if (!g[i] && sdkBits(cand[i]) === 1) { place(i, sdkFirst(cand[i]) + 1); progress = true; }
+    if (progress) continue;
+
+    if (tier >= 2)                                                    // Hidden Single
+      for (const u of units)
+        for (let d = 1; d <= n; d++) {
+          const bit = 1 << (d - 1);
+          let spot = -1, cnt = 0, taken = false;
+          for (const i of u) {
+            if (g[i] === d) { taken = true; break; }
+            if (!g[i] && (cand[i] & bit)) { spot = i; cnt++; }
+          }
+          if (!taken && cnt === 1) { place(spot, d); progress = true; }
+        }
+    if (progress) continue;
+
+    if (tier >= 3) {
+      const strip = (cells, bit, keep) => {                           // Kandidat streichen
+        for (const i of cells) {
+          if (g[i] || keep.has(i) || !(cand[i] & bit)) continue;
+          cand[i] &= ~bit; progress = true;
+        }
+      };
+      for (let d = 1; d <= n; d++) {                                  // Locked Candidates
+        const bit = 1 << (d - 1);
+        for (const box of boxes) {                                    // pointing: Box → Reihe/Spalte
+          const spots = box.filter((i) => !g[i] && (cand[i] & bit));
+          if (!spots.length || box.some((i) => g[i] === d)) continue;
+          const r = Math.floor(spots[0] / n), c = spots[0] % n;
+          if (spots.every((i) => Math.floor(i / n) === r)) strip(rows[r], bit, new Set(spots));
+          if (spots.every((i) => i % n === c)) strip(cols[c], bit, new Set(spots));
+        }
+        for (const line of [...rows, ...cols]) {                      // claiming: Reihe/Spalte → Box
+          const spots = line.filter((i) => !g[i] && (cand[i] & bit));
+          if (!spots.length || line.some((i) => g[i] === d)) continue;
+          const bx = boxOf[spots[0]];
+          if (spots.every((i) => boxOf[i] === bx)) strip(boxes[bx], bit, new Set(spots));
+        }
+      }
+      if (!progress)
+        for (const u of units) {                                      // Naked Pair
+          const pairs = u.filter((i) => !g[i] && sdkBits(cand[i]) === 2);
+          for (let a = 0; a < pairs.length; a++)
+            for (let b2 = a + 1; b2 < pairs.length; b2++) {
+              if (cand[pairs[a]] !== cand[pairs[b2]]) continue;
+              const mask = cand[pairs[a]], keep = new Set([pairs[a], pairs[b2]]);
+              for (const i of u) {
+                if (g[i] || keep.has(i) || !(cand[i] & mask)) continue;
+                cand[i] &= ~mask; progress = true;
+              }
+            }
+        }
+    }
+    if (!progress) return false;
+  }
+}
+
+/* ein Rätsel bauen: Löcher graben, solange die Stufe es noch ohne Raten löst.
+   Eine Stufe mit echter Technik (tier > 1) muss mit der schwächeren Technik
+   SCHEITERN, sonst wäre sie nur ein leichtes mit weniger Zahlen. Reicht das
+   Budget nicht, wird still eine Stufe tiefer gegangen statt hängen zu bleiben. */
+function sdkMake(rng, n, level) {
+  const names = Object.keys(SDK_LEVELS[n]);
+  if (!SDK_LEVELS[n][level]) level = names[names.length - 1];   // z.B. „schwer" beim 4×4
+  const { tier, givens: floor } = SDK_LEVELS[n][level];
+  for (let attempt = 0; attempt < SDK_RETRIES; attempt++) {
+    const solution = sdkFull(rng, n);
+    const puzzle = Int8Array.from(solution);
+    const order = [...Array(n * n).keys()];
+    for (let k = 0; k < order.length; k++) {
+      const j = k + Math.floor(rng() * (order.length - k));
+      [order[k], order[j]] = [order[j], order[k]];
+    }
+    let givens = n * n;
+    for (const i of order) {
+      if (givens <= floor) break;
+      const save = puzzle[i];
+      puzzle[i] = 0;
+      if (sdkLogic(puzzle, n, tier)) givens--;
+      else puzzle[i] = save;
+    }
+    if (tier > 1 && sdkLogic(puzzle, n, tier - 1)) continue;   // zu leicht für die Stufe
+    if (sdkCount(puzzle, n, 2) !== 1) continue;                // darf nie eintreten
+    return { puzzle, solution, level, givens };
+  }
+  // Budget erschöpft — eine Stufe tiefer statt hängen bleiben (G9). Die unterste Stufe
+  // hat keine Ausschlussprüfung und kann deshalb nicht scheitern.
+  return sdkMake(rng, n, names[names.indexOf(level) - 1]);
+}
+/* SUDOKU-END */
+
 const TEMPLATES = {
   zahlen: {
     name: "Zahlen schreiben",
@@ -2172,6 +2436,65 @@ const TEMPLATES = {
       return grid;
     },
   },
+
+  sudoku: {
+    name: "Sudoku",
+    glyph: "1-9",
+    description: "Ein Sudoku pro Karte — 4×4 mit 2×2-Blöcken oder 9×9 mit 3×3-Blöcken. Jedes Rätsel ist frisch gewürfelt, hat genau eine Lösung und ist ohne Raten lösbar. Zwei A5-Karten pro A4-Bogen quer, in der Mitte durchschneiden.",
+    // 148.5 = exactly half of A4 landscape, so two cards tile the Bogen without a gap
+    page: { w: 148.5, h: 210, pad: 10 },
+    twoUp: true,                         // zwei Karten pro A4-Bogen quer, zum Zerschneiden
+    random: true,
+    options: [
+      { key: "title", label: "Titel", type: "text", default: "Sudoku" },
+      { key: "size",  label: "Gitter", type: "select", default: "4", choices: [
+          { value: "4", label: "4×4 — 2×2-Blöcke, Ziffern 1–4" },
+          { value: "9", label: "9×9 — 3×3-Blöcke, Ziffern 1–9" },
+      ]},
+      { key: "level", label: "Schwierigkeit", type: "select", default: "leicht", choices: [
+          { value: "leicht", label: "leicht ★☆☆" },
+          { value: "mittel", label: "mittel ★★☆" },
+          { value: "schwer", label: "schwer ★★★" },
+        ],
+        // das 4×4 trägt keine dritte Stufe — die Technik-Leiter ist dort degeneriert
+        disabled: (o, v) => !SDK_LEVELS[parseInt(o.size, 10)][v],
+        hint: (o) => (o.size === "4" ? "Beim 4×4 gibt es nur leicht und mittel." : null) },
+    ],
+    render(o, ctx) {
+      const n = parseInt(o.size, 10);
+      const made = sdkMake(ctx.rng, n, o.level);
+      const { b } = sdkUnits(n);
+
+      // Zellgröße kommt aus dem Papier, nicht aus Literalen: SIDE_MM hält das Gitter
+      // von den Seitenrändern weg (limitiert das 9×9), CHROME_MM trägt oben Header +
+      // Titel + Sterne und lässt unten Luft, damit das Gitter nicht in den Schmuck
+      // ragt. CELL_MAX bremst nur das 4×4, damit die Kästchen nicht ins Alberne wachsen.
+      const SIDE_MM = 20, CHROME_MM = 72, CELL_MAX = 26;
+      const cell = Math.min((ctx.widthMm - SIDE_MM) / n, (ctx.heightMm - CHROME_MM) / n, CELL_MAX);
+
+      const wrap = el("div", "sudoku-wrap");
+      const k = SDK_STARS[made.level];     // die TATSÄCHLICHE Stufe — s. Fallback in sdkMake
+      const stars = el("div", "sudoku-stars");
+      stars.textContent = "★".repeat(k) + "☆".repeat(3 - k);
+      wrap.appendChild(stars);
+
+      const grid = el("div", "sudoku");
+      grid.style.setProperty("--sdk-cell", cell.toFixed(2) + "mm");
+      grid.style.gridTemplateColumns = `repeat(${n}, var(--sdk-cell))`;
+      for (let i = 0; i < n * n; i++) {
+        const d = made.puzzle[i], r = Math.floor(i / n), c = i % n;
+        const box = el("div", "sdk-cell" + (d ? " sdk-given" : ""));
+        if (d) box.textContent = d;
+        if (c % b === b - 1 && c !== n - 1) box.classList.add("sdk-block-r");
+        if (r % b === b - 1 && r !== n - 1) box.classList.add("sdk-block-b");
+        if (c === n - 1) box.classList.add("sdk-edge-r");   // Rahmen macht der Container
+        if (r === n - 1) box.classList.add("sdk-edge-b");
+        grid.appendChild(box);
+      }
+      wrap.appendChild(grid);
+      return wrap;
+    },
+  },
 };
 
 /* ============ shell ============ */
@@ -2243,6 +2566,30 @@ function updateHints(tpl, opts) {
     node.classList.toggle("show", !!text);
   }
 }
+/* a select may gate individual choices (e.g. "schwer" only exists on the 9×9 grid).
+   Gated choices are greyed out, and a value that just became unavailable falls back to
+   the first one still allowed — third hook next to syncDefaults / updateHints. */
+function syncChoices(tpl, opts) {
+  for (const o of tpl.options) {
+    if (!o.disabled) continue;
+    const input = $("opt-" + o.key);
+    if (!input) continue;
+    const open = [];
+    for (const oe of input.options) {
+      oe.disabled = o.disabled(opts, oe.value);
+      if (!oe.disabled) open.push(oe.value);
+    }
+    if (open.length && o.disabled(opts, opts[o.key])) {
+      // auf die naechstniedrigere noch erlaubte Wahl klemmen, nicht stumpf auf die erste:
+      // 9x9/schwer -> 4x4 landet auf mittel, nicht auf leicht
+      const was = [...input.options].findIndex((oe) => oe.value === opts[o.key]);
+      const below = [...input.options].slice(0, was).filter((oe) => !oe.disabled).pop();
+      const next = below ? below.value : open[0];
+      opts[o.key] = next;
+      input.value = next;
+    }
+  }
+}
 function saveOpts(tplId, opts) {
   localStorage.setItem("blattwerk:tpl", tplId);
   localStorage.setItem("blattwerk:opts:" + tplId, JSON.stringify(opts));
@@ -2296,6 +2643,7 @@ function buildOptions() {
       for (const c of o.choices) {
         const oe = el("option");
         oe.value = c.value; oe.textContent = c.label;
+        if (o.disabled) oe.disabled = o.disabled(opts, c.value);
         input.appendChild(oe);
       }
       input.value = opts[o.key];
@@ -2384,6 +2732,7 @@ function renderSheets() {
   const paper = paperOf(tpl);
   $("page-rule").textContent = `@page { size: ${paper.w}mm ${paper.h}mm; margin: 0; }`;
   syncDefaults(tpl, opts);
+  syncChoices(tpl, opts);
   updateHints(tpl, opts);
   saveOpts(activeTpl, opts);
 
