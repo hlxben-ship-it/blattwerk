@@ -1,2 +1,8 @@
 # validation artifacts (Playwright screenshots / print PDFs)
 playwright-screenshots/
+
+# font build cache (upstream Andika release, re-downloaded on demand)
+fonts/.build/
+
+# Playwright MCP scratch output
+.playwright-mcp/
