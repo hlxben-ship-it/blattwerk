@@ -143,6 +143,32 @@
   .field-row { display: flex; gap: 10px; }
   .field-row .field { flex: 1; }
 
+  /* Schalter-Chips (Groß/Klein) — dieselbe Mechanik wie die Vorlagen-Karten:
+     das Kästchen bleibt fokussierbar und unsichtbar, sichtbar ist der Chip daneben. */
+  .toggle-row { display: flex; gap: 10px; }
+  .toggle { position: relative; flex: 1; cursor: pointer; }
+  .toggle input { position: absolute; top: 0; left: 0; opacity: 0; pointer-events: none; }
+  .toggle-chip {
+    display: block;
+    font-family: "Blattschrift", system-ui, sans-serif;
+    font-size: 19px;
+    font-weight: 700;
+    text-align: center;
+    color: var(--ink);
+    padding: 6px 10px;
+    border: 2px solid var(--line);
+    border-radius: 10px;
+    background: var(--paper);
+    transition: border-color .15s ease, background .15s ease;
+  }
+  .toggle:hover .toggle-chip { border-color: var(--ink-soft); }
+  /* an = der Chip ist gefüllt; der letzte aktive ist gesperrt und bleibt einfach an */
+  .toggle input:checked + .toggle-chip { border-color: var(--ink); background: var(--deko-blue); }
+  .toggle input:focus-visible + .toggle-chip {
+    outline: 3px solid var(--pencil);
+    outline-offset: 1px;
+  }
+
   /* Vorlage picker — a sheet of stickers; the glyph is what the child practices.
      Native radios (hidden, still focusable) keep keyboard + reader semantics. */
   .tpl-cards {
@@ -2263,7 +2289,7 @@ const TEMPLATES = {
   buchstaben: {
     name: "Buchstaben schreiben",
     glyph: "ABC",
-    description: "Eine Zeile pro Buchstabe: 10 zufällige Großbuchstaben, im ersten Kästchen vorgegeben, der Rest der Zeile bleibt zum Üben frei.",
+    description: "Eine Zeile pro Buchstabe: 10 zufällige Buchstaben, im ersten Kästchen vorgegeben, der Rest der Zeile bleibt zum Üben frei. Groß- und Kleinbuchstaben einzeln zuschaltbar.",
     random: true,
     options: [
       { key: "title", label: "Titel",  type: "text",   default: "Buchstaben schreiben" },
@@ -2272,6 +2298,11 @@ const TEMPLATES = {
           { value: "12", label: "Mittel (1,2 cm)" },
           { value: "10", label: "Klein (1,0 cm)" },
       ]},
+      // zwei Schalter, mindestens einer an: der letzte aktive sperrt sich selbst
+      { key: "upper", label: "ABC", aria: "Großbuchstaben", type: "toggle", group: "Buchstaben",
+        default: true,  disabled: (o) => o.upper && !o.lower },
+      { key: "lower", label: "abc", aria: "Kleinbuchstaben", type: "toggle",
+        default: false, disabled: (o) => o.lower && !o.upper },
     ],
     render(o, ctx) {
       const rng = ctx.rng;
@@ -2281,7 +2312,11 @@ const TEMPLATES = {
         const j = i + Math.floor(rng() * (pool.length - i));
         [pool[i], pool[j]] = [pool[j], pool[i]];
       }
-      const letters = pool.slice(0, 10);
+      // Groß/Klein wird NACH dem Mischen entschieden, und nur wenn beide Formen aktiv sind
+      // fällt ein Zug an — so bleibt die Default-Karte je Seed identisch zu früher.
+      const both = o.upper && o.lower;
+      const letters = pool.slice(0, 10)
+        .map((L) => ((both ? rng() < 0.5 : o.upper) ? L : L.toLowerCase()));
 
       const cell = parseFloat(o.cell);
       const cols = Math.floor(ctx.widthMm / cell);
@@ -2593,6 +2628,8 @@ function syncChoices(tpl, opts) {
     if (!o.disabled) continue;
     const input = $("opt-" + o.key);
     if (!input) continue;
+    // ein Toggle hat keine Auswahlliste: disabled(opts) sperrt den Schalter selbst
+    if (o.type === "toggle") { input.disabled = o.disabled(opts); continue; }
     const open = [];
     for (const oe of input.options) {
       oe.disabled = o.disabled(opts, oe.value);
@@ -2649,7 +2686,35 @@ function buildOptions() {
   const opts = loadOpts(activeTpl);
 
   let numberRow = null; // pair up consecutive number fields side by side
+  let toggleRow = null; // consecutive toggles share one row under one group label
   for (const o of tpl.options) {
+    if (o.type === "toggle") {
+      numberRow = null;
+      if (!toggleRow) {
+        const group = el("div", "field");
+        const groupLabel = el("span", "field-label");
+        groupLabel.textContent = o.group || "";
+        toggleRow = el("div", "toggle-row");
+        group.append(groupLabel, toggleRow);
+        box.appendChild(group);
+      }
+      const check = el("input");
+      check.type = "checkbox";
+      check.checked = !!opts[o.key];
+      check.id = "opt-" + o.key;
+      check.dataset.key = o.key;
+      check.dataset.type = o.type;
+      // der Chip zeigt nur die Schriftprobe — der Reader braucht das ausgeschriebene Wort
+      check.setAttribute("aria-label", o.aria || o.label);
+      check.addEventListener("change", update);
+      const chip = el("span", "toggle-chip");
+      chip.textContent = o.label;
+      const wrap = el("label", "toggle");
+      wrap.append(check, chip);
+      toggleRow.appendChild(wrap);
+      continue;
+    }
+    toggleRow = null;
     const field = el("div", "field");
     const label = el("label");
     label.textContent = o.label;
@@ -2708,6 +2773,7 @@ function readOpts() {
   const opts = {};
   for (const input of $("opts").querySelectorAll("[data-key]")) {
     opts[input.dataset.key] =
+      input.dataset.type === "toggle" ? input.checked :
       input.dataset.type === "number" ? (parseInt(input.value, 10) || 0) : input.value;
   }
   return opts;
