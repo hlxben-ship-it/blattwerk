@@ -2343,12 +2343,12 @@ const TEMPLATES = {
   },
 
   mathe0: {
-    name: "Vorschule Mathe 0",
+    name: "Mathe 0",
     glyph: "2+3",
     description: "20 Plus- und Minus-Aufgaben im Zahlenraum bis 10 — alle Aufgaben gleich schwer.",
     random: true,
     options: [
-      { key: "title", label: "Titel", type: "text", default: "Vorschule Mathe 0" },
+      { key: "title", label: "Titel", type: "text", default: "Mathe 0" },
     ],
     render(o, ctx) {
       const rng = ctx.rng;
@@ -2387,12 +2387,12 @@ const TEMPLATES = {
   },
 
   mathe1: {
-    name: "Vorschule Mathe I",
+    name: "Mathe I",
     glyph: "8+9",
     description: "20 Plus- und Minus-Aufgaben im Zahlenraum bis 20 — fünf davon mit Ergebnis über 10, der Rest bleibt fingerzählbar.",
     random: true,
     options: [
-      { key: "title", label: "Titel", type: "text", default: "Vorschule Mathe I" },
+      { key: "title", label: "Titel", type: "text", default: "Mathe I" },
     ],
     render(o, ctx) {
       const rng = ctx.rng;
@@ -2506,6 +2506,22 @@ function el(tag, cls) { const e = document.createElement(tag); if (cls) e.classN
 
 let activeTpl = localStorage.getItem("blattwerk:tpl") || "mathe0";
 if (!TEMPLATES[activeTpl]) activeTpl = "zahlen";
+
+/* Rename-Migration (2026-09-21): "Vorschule Mathe 0/I" -> "Mathe 0/I".
+   loadOpts() prefers a saved title over the default, so a Gerät that had these
+   Vorlagen open once would keep printing the old heading. Drop the saved title
+   only when it is exactly the old default - a self-typed title survives. */
+for (const [id, alt] of [["mathe0", "Vorschule Mathe 0"], ["mathe1", "Vorschule Mathe I"]]) {
+  const k = "blattwerk:opts:" + id;
+  const raw = localStorage.getItem(k);
+  if (!raw) continue;
+  try {
+    const o = JSON.parse(raw);
+    if (o.title !== alt) continue;
+    delete o.title;
+    localStorage.setItem(k, JSON.stringify(o));
+  } catch { /* corrupt entry - loadOpts falls back to the defaults anyway */ }
+}
 
 /* Schmuck state — the roll survives reloads; option edits keep it */
 let dekoOn = localStorage.getItem("blattwerk:deko") !== "0";
